@@ -28,6 +28,12 @@ export interface Profile {
   resume_url: string | null;
   cover_url: string | null;
   cover_enabled: boolean;
+  linkedin_url: string | null;
+  github_url: string | null;
+  whatsapp_url: string | null;
+  facebook_url: string | null;
+  instagram_url: string | null;
+  twitter_url: string | null;
   theme: ProfileTheme;
   section_config: SectionConfigItemDto[];
   animation: ProfileAnimation;
