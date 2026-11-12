@@ -5,7 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service.js';
-import { CreateProfileDto, ProfileTheme, SectionConfigItemDto } from './dto/create-profile.dto.js';
+import {
+  CreateProfileDto,
+  ProfileAnimation,
+  ProfileTheme,
+  SectionConfigItemDto,
+} from './dto/create-profile.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 
 export interface Profile {
@@ -21,6 +26,7 @@ export interface Profile {
   resume_url: string | null;
   theme: ProfileTheme;
   section_config: SectionConfigItemDto[];
+  animation: ProfileAnimation;
   updated_at: string;
 }
 

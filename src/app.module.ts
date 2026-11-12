@@ -9,6 +9,7 @@ import { ProfileModule } from './profile/profile.module.js';
 import { ProjectsModule } from './projects/projects.module.js';
 import { SkillsModule } from './skills/skills.module.js';
 import { SupabaseModule } from './supabase/supabase.module.js';
+import { UploadsModule } from './uploads/uploads.module.js';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { SupabaseModule } from './supabase/supabase.module.js';
     CertificationsModule,
     InternshipsModule,
     ProjectsModule,
+    UploadsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
