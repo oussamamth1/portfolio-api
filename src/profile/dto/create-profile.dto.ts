@@ -10,11 +10,23 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-export const PROFILE_THEMES = ['amber', 'violet', 'emerald', 'crimson', 'azure'] as const;
+export const PROFILE_THEMES = [
+  'amber',
+  'violet',
+  'emerald',
+  'crimson',
+  'azure',
+  'rose',
+  'slate',
+  'ocean',
+] as const;
 export type ProfileTheme = (typeof PROFILE_THEMES)[number];
 
-export const PROFILE_ANIMATIONS = ['none', 'fade', 'particles', 'matrix'] as const;
+export const PROFILE_ANIMATIONS = ['none', 'fade', 'particles', 'matrix', 'tilt'] as const;
 export type ProfileAnimation = (typeof PROFILE_ANIMATIONS)[number];
+
+export const SIZES = ['small', 'medium', 'large'] as const;
+export type Size = (typeof SIZES)[number];
 
 export const SECTION_KEYS = [
   'skills',
@@ -78,4 +90,12 @@ export class CreateProfileDto {
   @IsOptional()
   @IsIn(PROFILE_ANIMATIONS)
   animation?: ProfileAnimation;
+
+  @IsOptional()
+  @IsIn(SIZES)
+  avatar_size?: Size;
+
+  @IsOptional()
+  @IsIn(SIZES)
+  text_size?: Size;
 }

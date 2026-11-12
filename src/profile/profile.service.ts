@@ -10,6 +10,7 @@ import {
   ProfileAnimation,
   ProfileTheme,
   SectionConfigItemDto,
+  Size,
 } from './dto/create-profile.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 
@@ -27,6 +28,8 @@ export interface Profile {
   theme: ProfileTheme;
   section_config: SectionConfigItemDto[];
   animation: ProfileAnimation;
+  avatar_size: Size;
+  text_size: Size;
   updated_at: string;
 }
 
