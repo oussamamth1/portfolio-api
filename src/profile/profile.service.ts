@@ -23,8 +23,11 @@ export interface Profile {
   tagline: string | null;
   bio: string | null;
   phone: string | null;
+  email: string | null;
   avatar_url: string | null;
   resume_url: string | null;
+  cover_url: string | null;
+  cover_enabled: boolean;
   theme: ProfileTheme;
   section_config: SectionConfigItemDto[];
   animation: ProfileAnimation;
