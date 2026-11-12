@@ -93,6 +93,30 @@ export class CreateProfileDto {
   cover_enabled?: boolean;
 
   @IsOptional()
+  @IsUrl()
+  linkedin_url?: string;
+
+  @IsOptional()
+  @IsUrl()
+  github_url?: string;
+
+  @IsOptional()
+  @IsUrl()
+  whatsapp_url?: string;
+
+  @IsOptional()
+  @IsUrl()
+  facebook_url?: string;
+
+  @IsOptional()
+  @IsUrl()
+  instagram_url?: string;
+
+  @IsOptional()
+  @IsUrl()
+  twitter_url?: string;
+
+  @IsOptional()
   @IsIn(PROFILE_THEMES)
   theme?: ProfileTheme;
 
