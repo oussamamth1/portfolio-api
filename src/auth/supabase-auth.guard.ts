@@ -1,19 +1,16 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { SupabaseService } from '../supabase/supabase.service.js';
 
+/**
+ * Authenticates any valid Supabase user and attaches them to the request as
+ * `request.user`. Ownership of individual resources (which rows a user may
+ * read/write) is enforced by the services, not here — this guard only
+ * answers "is this a real, logged-in user", not "which tenant are they".
+ */
 @Injectable()
 export class SupabaseAuthGuard implements CanActivate {
-  constructor(
-    private readonly supabase: SupabaseService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly supabase: SupabaseService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -26,11 +23,6 @@ export class SupabaseAuthGuard implements CanActivate {
     const { data, error } = await this.supabase.client.auth.getUser(token);
     if (error || !data.user) {
       throw new UnauthorizedException('Invalid or expired token');
-    }
-
-    const adminEmail = this.config.get<string>('ADMIN_EMAIL');
-    if (adminEmail && data.user.email !== adminEmail) {
-      throw new UnauthorizedException('Not authorized to edit this profile');
     }
 
     (request as Request & { user: typeof data.user }).user = data.user;
