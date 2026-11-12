@@ -13,6 +13,9 @@ import {
 export const PROFILE_THEMES = ['amber', 'violet', 'emerald', 'crimson', 'azure'] as const;
 export type ProfileTheme = (typeof PROFILE_THEMES)[number];
 
+export const PROFILE_ANIMATIONS = ['none', 'fade', 'particles', 'matrix'] as const;
+export type ProfileAnimation = (typeof PROFILE_ANIMATIONS)[number];
+
 export const SECTION_KEYS = [
   'skills',
   'internships',
@@ -71,4 +74,8 @@ export class CreateProfileDto {
   @ValidateNested({ each: true })
   @Type(() => SectionConfigItemDto)
   section_config?: SectionConfigItemDto[];
+
+  @IsOptional()
+  @IsIn(PROFILE_ANIMATIONS)
+  animation?: ProfileAnimation;
 }
