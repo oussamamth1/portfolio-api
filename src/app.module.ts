@@ -5,6 +5,7 @@ import { AppService } from './app.service.js';
 import { CertificationsModule } from './certifications/certifications.module.js';
 import { EducationModule } from './education/education.module.js';
 import { InternshipsModule } from './internships/internships.module.js';
+import { LanguagesModule } from './languages/languages.module.js';
 import { ProfileModule } from './profile/profile.module.js';
 import { ProjectsModule } from './projects/projects.module.js';
 import { SkillsModule } from './skills/skills.module.js';
@@ -20,6 +21,7 @@ import { UploadsModule } from './uploads/uploads.module.js';
     EducationModule,
     CertificationsModule,
     InternshipsModule,
+    LanguagesModule,
     ProjectsModule,
     UploadsModule,
   ],

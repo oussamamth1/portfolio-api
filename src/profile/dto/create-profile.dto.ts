@@ -34,6 +34,9 @@ export const SECTION_KEYS = [
   'projects',
   'education',
   'certifications',
+  'languages',
+  'stats',
+  'contact',
 ] as const;
 export type SectionKey = (typeof SECTION_KEYS)[number];
 
@@ -70,12 +73,24 @@ export class CreateProfileDto {
   phone?: string;
 
   @IsOptional()
+  @IsString()
+  email?: string;
+
+  @IsOptional()
   @IsUrl()
   avatar_url?: string;
 
   @IsOptional()
   @IsUrl()
   resume_url?: string;
+
+  @IsOptional()
+  @IsUrl()
+  cover_url?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  cover_enabled?: boolean;
 
   @IsOptional()
   @IsIn(PROFILE_THEMES)
