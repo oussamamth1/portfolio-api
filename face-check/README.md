@@ -12,8 +12,10 @@ Server that compares a photo against a police-managed list of people and returns
 
 1. This service lives in the `face-check/` folder of this repo and is declared in the root `render.yaml`.
 2. In Render: open the existing Blueprint and click **Manual sync**. Render reads `render.yaml` and creates:
-   - `face-check-api`: Docker web service on the Standard plan (2 GB RAM, which the model needs)
-   - `face-check-db`: PostgreSQL with no public access
+   - `face-check-api`: Docker web service on the **free** plan with the smaller `buffalo_s` model (demo)
+   - `face-check-db`: **free** PostgreSQL with no public access (Render deletes it after 30 days)
+
+   For real use, set the service to `standard` (2 GB RAM) and `MODEL_NAME` to `buffalo_l` in `render.yaml`.
 3. The first build takes about 10 minutes because it installs the AI libraries and downloads the model.
 4. Open the service's **Environment** tab and copy `ADMIN_API_KEY` and `OFFICER_API_KEY`.
 5. Open `https://<your-service>.onrender.com/admin` and paste the admin key.
