@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face Check Admin</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#667085; --line:#e3e6ea; --accent:#1d4ed8; --danger:#b42318; --ok:#067647; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d23; --text:#e8eaed; --muted:#98a2b3; --line:#2c3038; --accent:#6d9bff; --danger:#f97066; --ok:#47cd89; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 16px; }
+  label { display:block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; margin-top: 12px; }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); margin: 0; padding: 4px 10px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .card img { width: 100%; aspect-ratio: 1; object-fit: cover; display:block; background: var(--line); }
+  .card div { padding: 8px 10px; }
+  .row { display:flex; gap: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 200px; }
+  #msg { margin-top: 8px; font-size: 14px; }
+  .err { color: var(--danger); } .ok { color: var(--ok); }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align:left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  .tablewrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Face Check Admin</h1>
+  <p class="muted">Results are possible matches only. An officer must always verify identity before acting.</p>
+
+  <section>
+    <h2>Admin key</h2>
+    <div class="row">
+      <div><input id="key" type="password" placeholder="ADMIN_API_KEY"></div>
+    </div>
+    <button onclick="saveKey()">Connect</button>
+  </section>
+
+  <section>
+    <h2>Add a person</h2>
+    <form id="addForm">
+      <div class="row">
+        <div><label>Full name</label><input name="full_name" required></div>
+        <div><label>Case number</label><input name="case_number" required></div>
+      </div>
+      <label>Notes</label><textarea name="notes" rows="2"></textarea>
+      <label>Photo (one clear, front-facing face)</label><input name="photo" type="file" accept="image/*" required>
+      <button type="submit">Add</button>
+      <div id="msg"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Test identification</h2>
+    <p class="muted">Uses the officer key, as the mobile app will.</p>
+    <div class="row">
+      <div><input id="okey" type="password" placeholder="OFFICER_API_KEY"></div>
+      <div><input id="oid" placeholder="Officer ID" value="admin-test"></div>
+    </div>
+    <label>Photo</label><input id="testPhoto" type="file" accept="image/*">
+    <button onclick="testIdentify()">Identify</button>
+    <div id="testResult"></div>
+  </section>
+
+  <section>
+    <h2>People in database <span id="total" class="muted"></span></h2>
+    <input id="q" placeholder="Search name or case number" oninput="loadList()">
+    <div id="list" class="grid" style="margin-top:12px"></div>
+  </section>
+
+  <section>
+    <h2>Audit log</h2>
+    <div class="tablewrap"><table id="audit"></table></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let KEY = '';
+try { KEY = sessionStorage.getItem('adminKey') || ''; } catch (e) {}
+$('key').value = KEY;
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function api(path, opts = {}, key = KEY, extra = {}) {
+  const res = await fetch(path, { ...opts, headers: { 'X-Api-Key': key, ...extra } });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const j = await res.json(); detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (e) {}
+    throw new Error(detail);
+  }
+  return res;
+}
+
+async function photoUrl(id) {
+  const res = await api(`/api/suspects/${id}/photo`);
+  return URL.createObjectURL(await res.blob());
+}
+
+function saveKey() {
+  KEY = $('key').value.trim();
+  try { sessionStorage.setItem('adminKey', KEY); } catch (e) {}
+  refresh();
+}
+
+async function loadList() {
+  if (!KEY) return;
+  const q = encodeURIComponent($('q').value);
+  try {
+    const data = await (await api(`/api/suspects?q=${q}`)).json();
+    $('total').textContent = `(${data.total})`;
+    $('list').innerHTML = data.items.map(s => `
+      <div class="card">
+        <img data-id="${s.id}" alt="">
+        <div><strong>${esc(s.full_name)}</strong><br>
+        <span class="muted">Case ${esc(s.case_number)}</span><br>
+        <button class="danger" onclick="del(${s.id})">Remove</button></div>
+      </div>`).join('') || '<p class="muted">No one yet.</p>';
+    for (const img of $('list').querySelectorAll('img[data-id]')) {
+      photoUrl(img.dataset.id).then(u => img.src = u).catch(() => {});
+    }
+  } catch (e) { $('list').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function loadAudit() {
+  if (!KEY) return;
+  try {
+    const rows = await (await api('/api/audit?limit=50')).json();
+    $('audit').innerHTML = '<tr><th>Time</th><th>Who</th><th>Action</th><th>Result</th><th>Person</th><th>Score</th></tr>' +
+      rows.map(r => `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.actor)}</td><td>${esc(r.action)}</td>
+        <td>${esc(r.result)}</td><td>${r.suspect_id ?? ''}</td><td>${r.top_similarity != null ? r.top_similarity.toFixed(2) : ''}</td></tr>`).join('');
+  } catch (e) { $('audit').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+}
+
+async function del(id) {
+  try { await api(`/api/suspects/${id}`, { method: 'DELETE' }); refresh(); }
+  catch (e) { $('msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+$('addForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('msg').textContent = 'Processing...';
+  try {
+    const r = await (await api('/api/suspects', { method: 'POST', body: new FormData(ev.target) })).json();
+    $('msg').innerHTML = `<span class="ok">Added #${r.id}</span>`;
+    ev.target.reset();
+    refresh();
+  } catch (e) { $('msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+});
+
+async function testIdentify() {
+  const f = $('testPhoto').files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append('photo', f);
+  $('testResult').textContent = 'Checking...';
+  try {
+    const r = await (await api('/api/identify', { method: 'POST', body: fd }, $('okey').value.trim(),
+      { 'X-Officer-Id': $('oid').value.trim() })).json();
+    if (!r.face_detected) { $('testResult').innerHTML = '<p>No face detected.</p>'; return; }
+    if (!r.matches.length) { $('testResult').innerHTML = `<p class="ok">No match (threshold ${r.threshold}).</p>`; }
+    else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
+      `<p><strong>${esc(m.full_name)}</strong> - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
+    loadAudit();
+  } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+function refresh() { loadList(); loadAudit(); }
+refresh();
+</script>
+</body>
+</html>
