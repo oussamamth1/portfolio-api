@@ -24,7 +24,7 @@ services:
     runtime: docker
     dockerContext: ./face-check
     dockerfilePath: ./face-check/Dockerfile
-    plan: standard          # 2 GB RAM - the face model needs more than the 512 MB starter plan
+    plan: free              # demo: 512 MB RAM, sleeps after 15 min idle. Use standard + buffalo_l for real use
     region: frankfurt
     healthCheckPath: /health
     buildFilter:
@@ -43,9 +43,11 @@ services:
         value: "0.45"
       - key: TOP_K
         value: "3"
+      - key: MODEL_NAME
+        value: buffalo_s    # smaller model to fit in 512 MB; less accurate than buffalo_l
 
 databases:
   - name: face-check-db
-    plan: basic-256mb
+    plan: free              # demo: deleted by Render after 30 days
     region: frankfurt
     ipAllowList: []         # no public access - only Render services can connect
