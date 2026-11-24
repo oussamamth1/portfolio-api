@@ -29,6 +29,14 @@
   table { width:100%; border-collapse: collapse; font-size: 13px; }
   td, th { text-align:left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
   .tablewrap { overflow-x: auto; }
+  select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  .badge { display:inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin: 4px 0; }
+  .badge.wanted { background: var(--danger); color: #fff; }
+  .badge.notwanted { background: var(--line); color: var(--text); }
+  .check { display:flex; align-items:center; gap: 6px; margin: 8px 0 0; color: var(--text); font-size: 14px; }
+  .check input { width: auto; }
+  .actions { display:flex; gap: 8px; align-items:center; margin-top: 8px; }
+  .actions button { margin: 0; padding: 4px 10px; }
 </style>
 </head>
 <body>
@@ -50,6 +58,10 @@
       <div class="row">
         <div><label>Full name</label><input name="full_name" required></div>
         <div><label>Case number</label><input name="case_number" required></div>
+      </div>
+      <div class="row">
+        <div><label>Status</label><select name="status" id="addStatus"></select></div>
+        <div><label>&nbsp;</label><label class="check"><input type="checkbox" id="addWanted" checked> Wanted by police</label></div>
       </div>
       <label>Notes</label><textarea name="notes" rows="2"></textarea>
       <label>Photo (one clear, front-facing face)</label><input name="photo" type="file" accept="image/*" required>
@@ -87,6 +99,10 @@ let KEY = '';
 try { KEY = sessionStorage.getItem('adminKey') || ''; } catch (e) {}
 $('key').value = KEY;
 
+const STATUSES = { open: 'Open case', investigating: 'Under investigation', arrested: 'Arrested', released: 'Released', closed: 'Case closed' };
+const statusOptions = (cur) => Object.entries(STATUSES).map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('');
+$('addStatus').innerHTML = statusOptions('open');
+
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function api(path, opts = {}, key = KEY, extra = {}) {
@@ -121,7 +137,13 @@ async function loadList() {
         <img data-id="${s.id}" alt="">
         <div><strong>${esc(s.full_name)}</strong><br>
         <span class="muted">Case ${esc(s.case_number)}</span><br>
+        <span class="badge ${s.wanted ? 'wanted' : 'notwanted'}">${s.wanted ? 'WANTED' : 'Not wanted'}</span>
+        <span class="muted">${esc(STATUSES[s.status] || s.status)}</span>
+        <select id="st-${s.id}">${statusOptions(s.status)}</select>
+        <label class="check"><input type="checkbox" id="w-${s.id}"${s.wanted ? ' checked' : ''}> Wanted</label>
+        <div class="actions"><button onclick="saveStatus(${s.id})">Save</button>
         <button class="danger" onclick="del(${s.id})">Remove</button></div>
+        <div id="m-${s.id}" class="muted"></div></div>
       </div>`).join('') || '<p class="muted">No one yet.</p>';
     for (const img of $('list').querySelectorAll('img[data-id]')) {
       photoUrl(img.dataset.id).then(u => img.src = u).catch(() => {});
@@ -139,6 +161,15 @@ async function loadAudit() {
   } catch (e) { $('audit').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
 }
 
+async function saveStatus(id) {
+  const body = JSON.stringify({ status: $(`st-${id}`).value, wanted: $(`w-${id}`).checked });
+  $(`m-${id}`).textContent = 'Saving...';
+  try {
+    await api(`/api/suspects/${id}`, { method: 'PATCH', body }, KEY, { 'Content-Type': 'application/json' });
+    refresh();
+  } catch (e) { $(`m-${id}`).innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
 async function del(id) {
   try { await api(`/api/suspects/${id}`, { method: 'DELETE' }); refresh(); }
   catch (e) { $('msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
@@ -148,7 +179,9 @@ $('addForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   $('msg').textContent = 'Processing...';
   try {
-    const r = await (await api('/api/suspects', { method: 'POST', body: new FormData(ev.target) })).json();
+    const fd = new FormData(ev.target);
+    fd.set('wanted', $('addWanted').checked ? 'true' : 'false');
+    const r = await (await api('/api/suspects', { method: 'POST', body: fd })).json();
     $('msg').innerHTML = `<span class="ok">Added #${r.id}</span>`;
     ev.target.reset();
     refresh();
@@ -166,7 +199,7 @@ async function testIdentify() {
     if (!r.face_detected) { $('testResult').innerHTML = '<p>No face detected.</p>'; return; }
     if (!r.matches.length) { $('testResult').innerHTML = `<p class="ok">No match (threshold ${r.threshold}).</p>`; }
     else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
-      `<p><strong>${esc(m.full_name)}</strong> - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
+      `<p><strong>${esc(m.full_name)}</strong> <span class="badge ${m.wanted ? 'wanted' : 'notwanted'}">${m.wanted ? 'WANTED' : 'Not wanted'}</span> ${esc(STATUSES[m.status] || m.status)} - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
     loadAudit();
   } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }

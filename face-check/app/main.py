@@ -4,12 +4,16 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field
 
 from . import config
 from .db import audit, init_db
 from .faces import FaceEngine
 
 STATIC = Path(__file__).parent / "static"
+
+# Case status values; the admin page and the officer app show these labels.
+STATUSES = ("open", "investigating", "arrested", "released", "closed")
 
 
 @asynccontextmanager
@@ -78,9 +82,13 @@ async def add_suspect(
     full_name: str = Form(..., min_length=2, max_length=200),
     case_number: str = Form(..., min_length=1, max_length=100),
     notes: str | None = Form(None, max_length=2000),
+    wanted: bool = Form(True),
+    status: str = Form("open"),
     photo: UploadFile = File(...),
     actor: str = Depends(require_admin),
 ):
+    if status not in STATUSES:
+        raise HTTPException(400, f"status must be one of {', '.join(STATUSES)}")
     engine: FaceEngine = request.app.state.engine
     data = await _read_image(photo)
     try:
@@ -100,20 +108,22 @@ async def add_suspect(
     pool = request.app.state.pool
     with pool.connection() as conn:
         row = conn.execute(
-            "INSERT INTO suspects (full_name, case_number, notes, photo, photo_mime, embedding) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (full_name.strip(), case_number.strip(), notes, data,
+            "INSERT INTO suspects (full_name, case_number, notes, wanted, status, photo, photo_mime, embedding) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (full_name.strip(), case_number.strip(), notes, wanted, status, data,
              photo.content_type or "image/jpeg", engine.embedding(face)),
         ).fetchone()
     audit(pool, actor, "add_suspect", "ok", row[0])
-    return {"id": row[0], "full_name": full_name, "case_number": case_number}
+    return {"id": row[0], "full_name": full_name, "case_number": case_number,
+            "wanted": wanted, "status": status}
 
 
 @app.get("/api/suspects")
 def list_suspects(request: Request, q: str | None = None, limit: int = 100, offset: int = 0,
                   _: str = Depends(require_admin)):
     limit = max(1, min(limit, 500))
-    sql = "SELECT id, full_name, case_number, notes, created_at FROM suspects"
+    sql = ("SELECT id, full_name, case_number, notes, created_at, wanted, status, updated_at "
+           "FROM suspects")
     params: list = []
     if q:
         sql += " WHERE full_name ILIKE %s OR case_number ILIKE %s"
@@ -127,7 +137,8 @@ def list_suspects(request: Request, q: str | None = None, limit: int = 100, offs
         "total": total,
         "items": [
             {"id": r[0], "full_name": r[1], "case_number": r[2], "notes": r[3],
-             "created_at": r[4].isoformat()}
+             "created_at": r[4].isoformat(), "wanted": r[5], "status": r[6],
+             "updated_at": r[7].isoformat()}
             for r in rows
         ],
     }
@@ -142,6 +153,45 @@ def suspect_photo(request: Request, suspect_id: int, _: str = Depends(require_an
         raise HTTPException(404, "Not found")
     return Response(content=bytes(row[0]), media_type=row[1],
                     headers={"Cache-Control": "private, no-store"})
+
+
+class SuspectUpdate(BaseModel):
+    full_name: str | None = Field(None, min_length=2, max_length=200)
+    case_number: str | None = Field(None, min_length=1, max_length=100)
+    notes: str | None = Field(None, max_length=2000)
+    wanted: bool | None = None
+    status: str | None = None
+
+
+@app.patch("/api/suspects/{suspect_id}")
+def update_suspect(request: Request, suspect_id: int, body: SuspectUpdate,
+                   actor: str = Depends(require_admin)):
+    changes = body.model_dump(exclude_unset=True)
+    if "status" in changes and changes["status"] not in STATUSES:
+        raise HTTPException(400, f"status must be one of {', '.join(STATUSES)}")
+    for k in ("full_name", "case_number", "wanted", "status"):
+        if k in changes and changes[k] is None:
+            raise HTTPException(400, f"{k} cannot be empty")
+    for k in ("full_name", "case_number"):
+        if k in changes:
+            changes[k] = changes[k].strip()
+    if not changes:
+        raise HTTPException(400, "Nothing to update")
+
+    cols = ", ".join(f"{k} = %s" for k in changes)  # keys come from the model, not the client
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        row = conn.execute(
+            f"UPDATE suspects SET {cols}, updated_at = now() WHERE id = %s "
+            "RETURNING id, full_name, case_number, notes, wanted, status, updated_at",
+            (*changes.values(), suspect_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    summary = ", ".join(f"{k}={v}" for k, v in changes.items() if k in ("wanted", "status"))
+    audit(pool, actor, "update_suspect", summary or "details", suspect_id)
+    return {"id": row[0], "full_name": row[1], "case_number": row[2], "notes": row[3],
+            "wanted": row[4], "status": row[5], "updated_at": row[6].isoformat()}
 
 
 @app.delete("/api/suspects/{suspect_id}")
@@ -180,14 +230,15 @@ async def identify(request: Request, photo: UploadFile = File(...),
     emb = engine.embedding(faces[0])
     with pool.connection() as conn:
         rows = conn.execute(
-            "SELECT id, full_name, case_number, notes, 1 - (embedding <=> %s) AS sim "
+            "SELECT id, full_name, case_number, notes, 1 - (embedding <=> %s) AS sim, "
+            "wanted, status "
             "FROM suspects ORDER BY embedding <=> %s LIMIT %s",
             (emb, emb, config.TOP_K),
         ).fetchall()
 
     matches = [
         {"id": r[0], "full_name": r[1], "case_number": r[2], "notes": r[3],
-         "similarity": round(float(r[4]), 3),
+         "similarity": round(float(r[4]), 3), "wanted": r[5], "status": r[6],
          "photo_url": f"/api/suspects/{r[0]}/photo"}
         for r in rows if float(r[4]) >= config.MATCH_THRESHOLD
     ]
