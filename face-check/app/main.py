@@ -274,14 +274,27 @@ def wanted_list(request: Request, q: str | None = None, actor: str = Depends(req
     ]
 
 
+LIVENESS = ("passed", "failed")
+
+
 @app.post("/api/identify")
 async def identify(request: Request, photo: UploadFile = File(...),
+                   source: str = Form("photo"), liveness: str | None = Form(None),
                    actor: str = Depends(require_any)):
     """Compare the largest face in the photo with all suspects.
 
     The photo is processed in memory only and never stored.
     Results are *possible* matches for an officer to verify, never a decision.
+    source: "photo" (taken/chosen photo) or "live" (live camera scan in the app).
+    liveness: for live scans, whether the on-phone liveness check passed. It runs on the
+    phone, so treat it as a hint for the audit trail, not as proof.
     """
+    if source not in ("photo", "live"):
+        raise HTTPException(400, "source must be photo or live")
+    if liveness is not None and liveness not in LIVENESS:
+        raise HTTPException(400, f"liveness must be one of {', '.join(LIVENESS)}")
+    action = "identify_live" if source == "live" else "identify"
+    note = f"; liveness={liveness}" if liveness else ""
     engine: FaceEngine = request.app.state.engine
     pool = request.app.state.pool
     data = await _read_image(photo)
@@ -292,7 +305,7 @@ async def identify(request: Request, photo: UploadFile = File(...),
 
     faces = engine.detect(img)
     if not faces:
-        audit(pool, actor, "identify", "no_face")
+        audit(pool, actor, action, "no_face" + note)
         return {"face_detected": False, "face_count": 0, "matches": [],
                 "threshold": config.MATCH_THRESHOLD}
 
@@ -313,7 +326,7 @@ async def identify(request: Request, photo: UploadFile = File(...),
         for r in rows if float(r[4]) >= config.MATCH_THRESHOLD
     ]
     top = matches[0] if matches else None
-    audit(pool, actor, "identify", "possible_match" if top else "no_match",
+    audit(pool, actor, action, ("possible_match" if top else "no_match") + note,
           top["id"] if top else None, top["similarity"] if top else None)
     return {"face_detected": True, "face_count": len(faces), "matches": matches,
             "threshold": config.MATCH_THRESHOLD}

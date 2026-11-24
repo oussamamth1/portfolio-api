@@ -352,8 +352,9 @@ async function loadHistory(id) {
   try {
     const rows = await (await api(`/api/audit?suspect_id=${id}&limit=50`)).json();
     $('dHistory').innerHTML = rows.map(r => {
-      const what = r.action === 'identify'
-        ? `matched in a photo check (${r.top_similarity != null ? Math.round(r.top_similarity * 100) + '%' : ''})`
+      const live = r.action === 'identify_live';
+      const what = (r.action === 'identify' || live)
+        ? `matched in a ${live ? 'live scan' : 'photo check'} (${r.top_similarity != null ? Math.round(r.top_similarity * 100) + '%' : ''})${live && /liveness=failed/.test(r.result || '') ? ' - liveness NOT confirmed' : ''}`
         : `${ACTIONS[r.action] || r.action}${r.result && r.result !== 'ok' ? ': ' + esc(r.result) : ''}`;
       return `<li><span class="muted">${when(r.created_at)}</span> · ${esc(r.actor)} · ${what}</li>`;
     }).join('') || '<li class="muted">No history yet.</li>';
