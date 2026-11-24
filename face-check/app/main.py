@@ -1,12 +1,15 @@
+import hashlib
+import hmac
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from . import auth, config
+from . import auth, config, push
 from .db import audit, init_db
 from .faces import FaceEngine
 
@@ -40,19 +43,33 @@ def require_admin(x_api_key: str | None = Header(None)) -> str:
     return "admin"
 
 
-def require_officer(request: Request, authorization: str | None = Header(None)) -> str:
+class OfficerSession:
+    def __init__(self, officer_id: int, badge: str, token_hash: str):
+        self.officer_id, self.badge, self.token_hash = officer_id, badge, token_hash
+
+    @property
+    def actor(self) -> str:
+        return f"officer:{self.badge}"
+
+
+def officer_session(request: Request, authorization: str | None = Header(None)) -> OfficerSession:
     """Officer signed in through the app: `Authorization: Bearer <token>`."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Please sign in")
+    token_hash = auth.token_hash(authorization[7:].strip())
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
-            "SELECT o.badge FROM officer_sessions s JOIN officers o ON o.id = s.officer_id "
+            "SELECT o.id, o.badge FROM officer_sessions s JOIN officers o ON o.id = s.officer_id "
             "WHERE s.token_hash = %s AND s.expires_at > now() AND o.active",
-            (auth.token_hash(authorization[7:].strip()),),
+            (token_hash,),
         ).fetchone()
     if not row:
         raise HTTPException(401, "Session expired or account disabled - please sign in again")
-    return f"officer:{row[0]}"
+    return OfficerSession(row[0], row[1], token_hash)
+
+
+def require_officer(request: Request, authorization: str | None = Header(None)) -> str:
+    return officer_session(request, authorization).actor
 
 
 def require_any(request: Request, x_api_key: str | None = Header(None),
@@ -477,6 +494,279 @@ def sign_out_officer(request: Request, officer_id: int, actor: str = Depends(req
         conn.execute("DELETE FROM officer_sessions WHERE officer_id = %s", (officer_id,))
     audit(pool, actor, "signout_officer", row[0])
     return {"ok": True}
+
+
+# ---------- officer location and push token (mobile app) ----------
+
+class LocationBody(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
+    accuracy: float | None = Field(None, ge=0)
+
+
+@app.post("/api/officer/location")
+def officer_location(request: Request, body: LocationBody, me: OfficerSession = Depends(officer_session)):
+    """The app reports where this phone is, so it can receive alerts for its area."""
+    with request.app.state.pool.connection() as conn:
+        conn.execute(
+            "UPDATE officer_sessions SET lat = %s, lng = %s, accuracy_m = %s, location_at = now() "
+            "WHERE token_hash = %s",
+            (body.lat, body.lng, body.accuracy, me.token_hash),
+        )
+    return {"ok": True}
+
+
+class PushTokenBody(BaseModel):
+    token: str = Field(..., min_length=10, max_length=4096)
+
+
+@app.post("/api/officer/push-token")
+def officer_push_token(request: Request, body: PushTokenBody, me: OfficerSession = Depends(officer_session)):
+    with request.app.state.pool.connection() as conn:
+        # A token belongs to one phone: drop it from any older session first.
+        conn.execute("UPDATE officer_sessions SET push_token = NULL WHERE push_token = %s", (body.token,))
+        conn.execute("UPDATE officer_sessions SET push_token = %s WHERE token_hash = %s",
+                     (body.token, me.token_hash))
+    return {"ok": True, "push_enabled": push.enabled()}
+
+
+# ---------- alerts: wanted person found, tell nearby officers ----------
+
+def _get_setting(conn, key: str, default: str) -> str:
+    row = conn.execute("SELECT value FROM app_settings WHERE key = %s", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def _radius_km(conn) -> float:
+    return float(_get_setting(conn, "alert_radius_km", str(config.ALERT_DEFAULT_RADIUS_KM)))
+
+
+# Great-circle distance in km between a row's (lat, lng) and the %(lat)s/%(lng)s parameters.
+_KM_SQL = ("6371 * 2 * asin(least(1, sqrt(power(sin(radians({t}.lat - %(lat)s) / 2), 2) + "
+           "cos(radians(%(lat)s)) * cos(radians({t}.lat)) * power(sin(radians({t}.lng - %(lng)s) / 2), 2))))")
+
+
+def _photo_sig(alert_id: int, expires: int) -> str:
+    msg = f"alert-photo:{alert_id}:{expires}".encode()
+    return hmac.new(config.ADMIN_API_KEY.encode(), msg, hashlib.sha256).hexdigest()[:32]
+
+
+def _public_base(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    return f"{proto}://{host}"
+
+
+def _send_alert_pushes(pool, alert_id: int, tokens: list[str], title: str, body: str, image_url: str):
+    dead = push.send(tokens, title, body, {"type": "alert", "alert_id": str(alert_id)}, image_url)
+    sent = [t for t in tokens if t not in dead]
+    with pool.connection() as conn:
+        if dead:
+            conn.execute("UPDATE officer_sessions SET push_token = NULL WHERE push_token = ANY(%s)", (dead,))
+        if sent and push.enabled():
+            conn.execute(
+                "UPDATE alert_recipients r SET pushed = true FROM officer_sessions s "
+                "WHERE r.alert_id = %s AND s.officer_id = r.officer_id AND s.push_token = ANY(%s)",
+                (alert_id, sent),
+            )
+
+
+@app.post("/api/alerts")
+async def create_alert(
+    request: Request,
+    background: BackgroundTasks,
+    suspect_id: int = Form(...),
+    lat: float = Form(..., ge=-90, le=90),
+    lng: float = Form(..., ge=-180, le=180),
+    accuracy: float | None = Form(None, ge=0),
+    similarity: float | None = Form(None, ge=0, le=1),
+    photo: UploadFile = File(...),
+    me: OfficerSession = Depends(officer_session),
+):
+    """An officer found a wanted person: store the field photo and location, and
+    notify every other on-duty officer within the alert radius."""
+    data = await _read_image(photo)
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        person = conn.execute(
+            "SELECT full_name, case_number, wanted, most_wanted FROM suspects WHERE id = %s",
+            (suspect_id,)).fetchone()
+        if not person:
+            raise HTTPException(404, "Person not found")
+        if not person[2]:
+            raise HTTPException(400, "This person is not on the wanted list")
+
+        recent = conn.execute(
+            "SELECT id FROM alerts WHERE suspect_id = %s AND officer_id = %s "
+            "AND created_at > now() - make_interval(mins => %s::int) ORDER BY id DESC LIMIT 1",
+            (suspect_id, me.officer_id, config.ALERT_DEDUPE_MIN)).fetchone()
+        if recent:
+            n = conn.execute("SELECT count(*) FROM alert_recipients WHERE alert_id = %s",
+                             (recent[0],)).fetchone()[0]
+            return {"id": recent[0], "duplicate": True, "recipients": n,
+                    "push_enabled": push.enabled()}
+
+        radius = _radius_km(conn)
+        alert_id = conn.execute(
+            "INSERT INTO alerts (suspect_id, full_name, case_number, most_wanted, officer_id, "
+            "officer_badge, lat, lng, accuracy_m, similarity, photo, photo_mime, radius_km) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (suspect_id, person[0], person[1], person[3], me.officer_id, me.badge, lat, lng,
+             accuracy, similarity, data, photo.content_type or "image/jpeg", radius),
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            f"SELECT s.officer_id, s.push_token, {_KM_SQL.format(t='s')} AS km "
+            "FROM officer_sessions s JOIN officers o ON o.id = s.officer_id "
+            "WHERE o.active AND s.expires_at > now() AND s.lat IS NOT NULL "
+            "AND s.location_at > now() - make_interval(mins => %(age)s::int) AND s.officer_id <> %(me)s",
+            {"lat": lat, "lng": lng, "age": config.LOCATION_MAX_AGE_MIN, "me": me.officer_id},
+        ).fetchall()
+        nearest: dict[int, float] = {}
+        tokens: list[str] = []
+        for officer_id, token, km in rows:
+            if km is None or km > radius:
+                continue
+            nearest[officer_id] = min(km, nearest.get(officer_id, km))
+            if token:
+                tokens.append(token)
+        for officer_id, km in nearest.items():
+            conn.execute("INSERT INTO alert_recipients (alert_id, officer_id, distance_km) "
+                         "VALUES (%s, %s, %s)", (alert_id, officer_id, km))
+        conn.execute("DELETE FROM alerts WHERE created_at < now() - make_interval(days => %s::int)",
+                     (config.ALERT_RETENTION_DAYS,))
+
+    audit(pool, me.actor, "alert", f"alert #{alert_id}: {len(nearest)} officers within {radius:g} km",
+          suspect_id, similarity)
+
+    if tokens:
+        expires = int(time.time()) + 3600
+        image_url = (f"{_public_base(request)}/api/alerts/{alert_id}/photo"
+                     f"?e={expires}&sig={_photo_sig(alert_id, expires)}")
+        title = ("MOST WANTED" if person[3] else "WANTED") + f" person spotted nearby: {person[0]}"
+        body = f"Case {person[1]} - reported by officer {me.badge}. Tap to see the photo and location."
+        background.add_task(_send_alert_pushes, pool, alert_id, tokens, title, body, image_url)
+
+    return {"id": alert_id, "duplicate": False, "recipients": len(nearest), "radius_km": radius,
+            "push_enabled": push.enabled()}
+
+
+_ALERT_COLS = ("a.id, a.suspect_id, a.full_name, a.case_number, a.most_wanted, a.officer_badge, "
+               "a.lat, a.lng, a.accuracy_m, a.similarity, a.created_at, a.radius_km, "
+               "sp.status, sp.wanted, "
+               "(SELECT count(*) FROM alert_recipients r2 WHERE r2.alert_id = a.id)")
+
+
+def _alert_json(r, distance_km=None, mine=False) -> dict:
+    return {
+        "id": r[0], "suspect_id": r[1], "full_name": r[2], "case_number": r[3], "most_wanted": r[4],
+        "officer_badge": r[5], "lat": r[6], "lng": r[7], "accuracy_m": r[8], "similarity": r[9],
+        "created_at": r[10].isoformat(), "radius_km": r[11],
+        "status": r[12], "still_wanted": bool(r[13]) if r[13] is not None else False,
+        "recipients": r[14], "distance_km": distance_km, "sent_by_me": mine,
+        "photo_url": f"/api/alerts/{r[0]}/photo",
+        "reference_photo_url": f"/api/suspects/{r[1]}/photo" if r[1] else None,
+    }
+
+
+@app.get("/api/alerts")
+def list_alerts(request: Request, days: int = 7, x_api_key: str | None = Header(None),
+                authorization: str | None = Header(None)):
+    """Officer: alerts sent to me or by me. Admin: all alerts."""
+    days = max(1, min(days, 90))
+    with request.app.state.pool.connection() as conn:
+        if _key_ok(x_api_key, config.ADMIN_API_KEY):
+            rows = conn.execute(
+                f"SELECT {_ALERT_COLS} FROM alerts a LEFT JOIN suspects sp ON sp.id = a.suspect_id "
+                "WHERE a.created_at > now() - make_interval(days => %s::int) ORDER BY a.id DESC LIMIT 500",
+                (days,)).fetchall()
+            return [_alert_json(r) for r in rows]
+        me = officer_session(request, authorization)
+        rows = conn.execute(
+            f"SELECT {_ALERT_COLS}, r.distance_km, a.officer_id = %(me)s FROM alerts a "
+            "LEFT JOIN suspects sp ON sp.id = a.suspect_id "
+            "LEFT JOIN alert_recipients r ON r.alert_id = a.id AND r.officer_id = %(me)s "
+            "WHERE (r.officer_id IS NOT NULL OR a.officer_id = %(me)s) "
+            "AND a.created_at > now() - make_interval(days => %(days)s::int) ORDER BY a.id DESC LIMIT 200",
+            {"me": me.officer_id, "days": days}).fetchall()
+    return [_alert_json(r, r[15], r[16]) for r in rows]
+
+
+def _officer_can_see(conn, alert_id: int, officer_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM alerts a WHERE a.id = %s AND (a.officer_id = %s OR EXISTS "
+        "(SELECT 1 FROM alert_recipients r WHERE r.alert_id = a.id AND r.officer_id = %s))",
+        (alert_id, officer_id, officer_id)).fetchone() is not None
+
+
+@app.get("/api/alerts/{alert_id}")
+def get_alert(request: Request, alert_id: int, x_api_key: str | None = Header(None),
+              authorization: str | None = Header(None)):
+    with request.app.state.pool.connection() as conn:
+        dist, mine = None, False
+        if not _key_ok(x_api_key, config.ADMIN_API_KEY):
+            me = officer_session(request, authorization)
+            if not _officer_can_see(conn, alert_id, me.officer_id):
+                raise HTTPException(404, "Not found")
+            extra = conn.execute(
+                "SELECT (SELECT distance_km FROM alert_recipients WHERE alert_id = %s AND officer_id = %s), "
+                "(SELECT officer_id = %s FROM alerts WHERE id = %s)",
+                (alert_id, me.officer_id, me.officer_id, alert_id)).fetchone()
+            dist, mine = extra[0], bool(extra[1])
+        row = conn.execute(
+            f"SELECT {_ALERT_COLS} FROM alerts a LEFT JOIN suspects sp ON sp.id = a.suspect_id "
+            "WHERE a.id = %s", (alert_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    return _alert_json(row, dist, mine)
+
+
+@app.get("/api/alerts/{alert_id}/photo")
+def alert_photo(request: Request, alert_id: int, e: int | None = None, sig: str | None = None,
+                x_api_key: str | None = Header(None), authorization: str | None = Header(None)):
+    """Field photo of an alert. Also reachable for one hour through the signed link put in
+    the push notification, so Android can show the picture in the notification."""
+    with request.app.state.pool.connection() as conn:
+        signed = (e is not None and sig is not None and e > time.time()
+                  and hmac.compare_digest(sig, _photo_sig(alert_id, e)))
+        if not signed and not _key_ok(x_api_key, config.ADMIN_API_KEY):
+            me = officer_session(request, authorization)
+            if not _officer_can_see(conn, alert_id, me.officer_id):
+                raise HTTPException(404, "Not found")
+        row = conn.execute("SELECT photo, photo_mime FROM alerts WHERE id = %s", (alert_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    return Response(content=bytes(row[0]), media_type=row[1],
+                    headers={"Cache-Control": "private, no-store"})
+
+
+class AlertSettings(BaseModel):
+    radius_km: float = Field(..., gt=0, le=500)
+
+
+@app.get("/api/settings/alerts")
+def get_alert_settings(request: Request, _: str = Depends(require_admin)):
+    with request.app.state.pool.connection() as conn:
+        radius = _radius_km(conn)
+        on_duty = conn.execute(
+            "SELECT count(DISTINCT s.officer_id), count(DISTINCT s.officer_id) FILTER (WHERE s.push_token IS NOT NULL) "
+            "FROM officer_sessions s JOIN officers o ON o.id = s.officer_id WHERE o.active "
+            "AND s.expires_at > now() AND s.location_at > now() - make_interval(mins => %s::int)",
+            (config.LOCATION_MAX_AGE_MIN,)).fetchone()
+    return {"radius_km": radius, "push_enabled": push.enabled(),
+            "location_max_age_min": config.LOCATION_MAX_AGE_MIN,
+            "officers_with_location": on_duty[0], "officers_with_push": on_duty[1],
+            "retention_days": config.ALERT_RETENTION_DAYS}
+
+
+@app.put("/api/settings/alerts")
+def put_alert_settings(request: Request, body: AlertSettings, actor: str = Depends(require_admin)):
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('alert_radius_km', %s) "
+                     "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (str(body.radius_km),))
+    audit(pool, actor, "settings", f"alert radius = {body.radius_km:g} km")
+    return get_alert_settings(request, actor)
 
 
 @app.get("/api/audit")

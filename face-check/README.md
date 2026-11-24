@@ -43,6 +43,12 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 | GET / POST | `/api/officers` | admin | List / create officer accounts (`badge`, `full_name`, `password`) |
 | PATCH | `/api/officers/{id}` | admin | JSON: any of `full_name`, `password`, `active` |
 | POST | `/api/officers/{id}/signout` | admin | Sign the officer out on every phone |
+| POST | `/api/officer/location` | officer | JSON `lat`, `lng`, `accuracy`: where this phone is (sent while the app is open) |
+| POST | `/api/officer/push-token` | officer | JSON `token`: this phone's Firebase push token |
+| POST | `/api/alerts` | officer | Form `suspect_id`, `lat`, `lng`, `accuracy`, `similarity`, `photo`: wanted person found; notifies officers within the radius |
+| GET | `/api/alerts` | officer or admin | Officer: alerts received or sent (7 days). Admin: all |
+| GET | `/api/alerts/{id}`, `/api/alerts/{id}/photo` | officer (sender/recipient) or admin | Alert detail and field photo |
+| GET / PUT | `/api/settings/alerts` | admin | Alert radius (km) and push status |
 | GET | `/api/audit?suspect_id=` | admin | Who checked what, and when (optionally for one person) |
 
 `status` is one of `open`, `investigating`, `arrested`, `released`, `closed`.
@@ -51,6 +57,18 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 Send the **full photo** to `/api/identify` (downscaled to about 1280 px), not a tight
 face crop. The server detects the face itself. Photos sent to `/identify` are processed in
 memory and **never stored**.
+
+## Alerts and push notifications
+
+When an officer reports a wanted person, the server stores the field photo and location and
+notifies every other signed-in officer whose phone reported a location within the last
+`LOCATION_MAX_AGE_MIN` minutes (default 120) and is within the alert radius (default 5 km,
+set on `/admin`). The same officer reporting the same person within 10 minutes reuses the
+first alert. Field photos are deleted after `ALERT_RETENTION_DAYS` (default 30).
+
+Push uses Firebase Cloud Messaging. Set `FIREBASE_SERVICE_ACCOUNT_JSON` to the full
+service-account key (Firebase console > Project settings > Service accounts > Generate new
+private key). Without it alerts still work, but officers only see them when they open the app.
 
 ## Before real use
 

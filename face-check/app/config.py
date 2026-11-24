@@ -23,3 +23,12 @@ MODEL_ROOT = os.environ.get("MODEL_ROOT", os.path.expanduser("~/.insightface"))
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MIN_ENROLL_FACE_PX = 80
 MIN_DET_SCORE = 0.6
+
+# Alerts: officers whose phone reported a location within this many minutes are
+# considered "on duty" for nearby alerts. The radius itself is set on /admin.
+ALERT_DEFAULT_RADIUS_KM = float(os.environ.get("ALERT_DEFAULT_RADIUS_KM", "5"))
+LOCATION_MAX_AGE_MIN = int(os.environ.get("LOCATION_MAX_AGE_MIN", "120"))
+# Field photos in alerts are deleted after this many days.
+ALERT_RETENTION_DAYS = int(os.environ.get("ALERT_RETENTION_DAYS", "30"))
+# Same officer + same person within this many minutes reuses the earlier alert.
+ALERT_DEDUPE_MIN = int(os.environ.get("ALERT_DEDUPE_MIN", "10"))

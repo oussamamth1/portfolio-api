@@ -76,6 +76,7 @@
 
   <nav class="tabs" id="tabs">
     <button data-tab="people" class="on">People</button>
+    <button data-tab="alerts">Alerts</button>
     <button data-tab="officers">Officers</button>
     <button data-tab="test">Test identification</button>
     <button data-tab="audit">Audit log</button>
@@ -122,6 +123,25 @@
         <button class="ghost small" id="prev">Previous</button>
         <button class="ghost small" id="next">Next</button>
       </div>
+    </section>
+  </div>
+
+  <!-- Alerts -->
+  <div data-panel="alerts" class="hidden">
+    <section>
+      <h2>Alert settings</h2>
+      <p class="muted">When an officer reports a wanted person, every other signed-in officer whose phone
+        is within this distance gets a notification with the photo and location.</p>
+      <div class="row" style="align-items:flex-end">
+        <div style="flex:0 1 200px"><label>Alert radius (km)</label><input id="radius" type="number" min="0.1" max="500" step="0.1"></div>
+        <div style="flex:0 0 auto"><button onclick="saveRadius()">Save</button></div>
+        <div id="pushInfo" class="muted" style="flex:2 1 300px"></div>
+      </div>
+      <div id="rmsg"></div>
+    </section>
+    <section>
+      <h2>Alerts <span class="muted">(last 30 days)</span></h2>
+      <div class="tablewrap"><table id="alerts"></table></div>
     </section>
   </div>
 
@@ -261,6 +281,7 @@ $('tabs').addEventListener('click', (ev) => {
   for (const p of document.querySelectorAll('[data-panel]')) p.classList.toggle('hidden', p.dataset.panel !== t.dataset.tab);
   if (t.dataset.tab === 'audit') loadAudit();
   if (t.dataset.tab === 'officers') loadOfficers();
+  if (t.dataset.tab === 'alerts') loadAlerts();
 });
 
 // ---------- people list ----------
@@ -346,7 +367,7 @@ $('dWanted').addEventListener('change', () => { if (!$('dWanted').checked) $('dM
 $('addMost').addEventListener('change', () => { if ($('addMost').checked) $('addWanted').checked = true; });
 $('addWanted').addEventListener('change', () => { if (!$('addWanted').checked) $('addMost').checked = false; });
 
-const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed' };
+const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed', alert: 'Alert sent' };
 async function loadHistory(id) {
   $('dHistory').innerHTML = '<li class="muted">Loading...</li>';
   try {
@@ -474,6 +495,59 @@ async function testIdentify() {
     else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
       `<p><strong>${esc(m.full_name)}</strong> ${badge(m)} ${esc(STATUSES[m.status] || m.status)} - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
   } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+// ---------- alerts ----------
+const alertPhotoCache = new Map();
+function alertPhotoUrl(id) {
+  id = String(id);
+  if (!alertPhotoCache.has(id)) {
+    alertPhotoCache.set(id, api(`/api/alerts/${id}/photo`).then(r => r.blob()).then(b => URL.createObjectURL(b))
+      .catch(e => { alertPhotoCache.delete(id); throw e; }));
+  }
+  return alertPhotoCache.get(id);
+}
+
+async function loadAlertSettings() {
+  try {
+    const st = await (await api('/api/settings/alerts')).json();
+    $('radius').value = st.radius_km;
+    $('pushInfo').innerHTML =
+      (st.push_enabled ? '<span class="ok">Push notifications are on.</span>'
+                       : '<span class="err">Push notifications are off</span> - add FIREBASE_SERVICE_ACCOUNT_JSON in Render. Officers still see alerts when they open the app.') +
+      `<br>${st.officers_with_location} officer(s) sent a location in the last ${st.location_max_age_min} min, ${st.officers_with_push} with push enabled. Field photos are kept ${st.retention_days} days.`;
+  } catch (e) { $('pushInfo').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+async function saveRadius() {
+  const radius_km = parseFloat($('radius').value);
+  try {
+    await api('/api/settings/alerts', { method: 'PUT', body: JSON.stringify({ radius_km }) }, KEY, jsonHeaders);
+    $('rmsg').innerHTML = '<span class="ok">Saved.</span>';
+    loadAlertSettings();
+  } catch (e) { $('rmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+async function loadAlerts() {
+  if (!KEY) return;
+  loadAlertSettings();
+  try {
+    const rows = await (await api('/api/alerts?days=30')).json();
+    $('alerts').innerHTML = '<tr><th></th><th>Person</th><th>When</th><th>Reported by</th><th>Officers alerted</th><th>Location</th></tr>' +
+      (rows.map(a => `<tr>
+        <td><img class="thumb" data-alert="${a.id}" alt=""></td>
+        <td><strong>${esc(a.full_name)}</strong><br>${badge({ wanted: true, most_wanted: a.most_wanted })}
+          <span class="muted">case ${esc(a.case_number)}${a.similarity != null ? ` · ${Math.round(a.similarity * 100)}%` : ''}</span></td>
+        <td>${when(a.created_at)}</td>
+        <td>officer:${esc(a.officer_badge)}</td>
+        <td>${a.recipients} <span class="muted">within ${a.radius_km} km</span></td>
+        <td><a href="https://www.google.com/maps/search/?api=1&query=${a.lat},${a.lng}" target="_blank" rel="noopener">Map</a>
+          ${a.accuracy_m != null ? `<span class="muted">±${Math.round(a.accuracy_m)} m</span>` : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">No alerts yet.</td></tr>');
+    for (const img of $('alerts').querySelectorAll('img[data-alert]')) {
+      alertPhotoUrl(img.dataset.alert).then(u => img.src = u).catch(() => {});
+    }
+  } catch (e) { $('alerts').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
 }
 
 // ---------- audit ----------

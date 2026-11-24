@@ -38,6 +38,45 @@ CREATE TABLE IF NOT EXISTS officer_sessions (
 );
 CREATE INDEX IF NOT EXISTS officer_sessions_officer_idx ON officer_sessions (officer_id);
 
+-- Per phone: where the officer is and how to reach them with a push notification.
+ALTER TABLE officer_sessions ADD COLUMN IF NOT EXISTS push_token TEXT;
+ALTER TABLE officer_sessions ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+ALTER TABLE officer_sessions ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION;
+ALTER TABLE officer_sessions ADD COLUMN IF NOT EXISTS accuracy_m REAL;
+ALTER TABLE officer_sessions ADD COLUMN IF NOT EXISTS location_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id          SERIAL PRIMARY KEY,
+    suspect_id  INT REFERENCES suspects(id) ON DELETE SET NULL,
+    full_name   TEXT NOT NULL,          -- copied, so the alert still reads right if the person is removed
+    case_number TEXT NOT NULL,
+    most_wanted BOOLEAN NOT NULL,
+    officer_id  INT REFERENCES officers(id) ON DELETE SET NULL,
+    officer_badge TEXT NOT NULL,
+    lat         DOUBLE PRECISION NOT NULL,
+    lng         DOUBLE PRECISION NOT NULL,
+    accuracy_m  REAL,
+    similarity  REAL,
+    photo       BYTEA NOT NULL,         -- the photo taken in the field
+    photo_mime  TEXT NOT NULL,
+    radius_km   REAL NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alerts_created_idx ON alerts (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS alert_recipients (
+    alert_id    INT NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+    officer_id  INT NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    distance_km REAL,
+    pushed      BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (alert_id, officer_id)
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id             BIGSERIAL PRIMARY KEY,
     actor          TEXT NOT NULL,
