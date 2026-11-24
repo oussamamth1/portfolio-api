@@ -127,28 +127,59 @@ async def add_suspect(
             "wanted": wanted, "most_wanted": wanted and most_wanted, "status": status}
 
 
+WANTED_FILTERS = {
+    "most": "most_wanted",
+    "wanted": "wanted",
+    "wanted_only": "wanted AND NOT most_wanted",
+    "not": "NOT wanted",
+}
+SORTS = {
+    "updated": "updated_at DESC",
+    "newest": "id DESC",
+    "name": "full_name ASC",
+}
+
+
 @app.get("/api/suspects")
-def list_suspects(request: Request, q: str | None = None, limit: int = 100, offset: int = 0,
-                  _: str = Depends(require_admin)):
+def list_suspects(request: Request, q: str | None = None, wanted: str | None = None,
+                  status: str | None = None, sort: str = "updated",
+                  limit: int = 100, offset: int = 0, _: str = Depends(require_admin)):
+    """List people. Filters: q (name/case/notes), wanted (most|wanted|wanted_only|not), status."""
     limit = max(1, min(limit, 500))
-    sql = ("SELECT id, full_name, case_number, notes, created_at, wanted, status, updated_at, "
-           "most_wanted "
-           "FROM suspects")
-    params: list = []
+    where, params = [], []
     if q:
-        sql += " WHERE full_name ILIKE %s OR case_number ILIKE %s"
-        params += [f"%{q}%", f"%{q}%"]
-    sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
-    params += [limit, offset]
+        where.append("(full_name ILIKE %s OR case_number ILIKE %s OR notes ILIKE %s)")
+        params += [f"%{q}%"] * 3
+    if wanted:
+        if wanted not in WANTED_FILTERS:
+            raise HTTPException(400, f"wanted must be one of {', '.join(WANTED_FILTERS)}")
+        where.append(WANTED_FILTERS[wanted])
+    if status:
+        if status not in STATUSES:
+            raise HTTPException(400, f"status must be one of {', '.join(STATUSES)}")
+        where.append("status = %s")
+        params.append(status)
+    if sort not in SORTS:
+        raise HTTPException(400, f"sort must be one of {', '.join(SORTS)}")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     with request.app.state.pool.connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        total = conn.execute("SELECT count(*) FROM suspects").fetchone()[0]
+        rows = conn.execute(
+            "SELECT id, full_name, case_number, notes, created_at, wanted, status, updated_at, "
+            f"most_wanted FROM suspects{where_sql} ORDER BY {SORTS[sort]} LIMIT %s OFFSET %s",
+            (*params, limit, offset),
+        ).fetchall()
+        matching = conn.execute(f"SELECT count(*) FROM suspects{where_sql}", params).fetchone()[0]
+        counts = conn.execute(
+            "SELECT count(*), count(*) FILTER (WHERE most_wanted), "
+            "count(*) FILTER (WHERE wanted AND NOT most_wanted), count(*) FILTER (WHERE NOT wanted) "
+            "FROM suspects").fetchone()
     return {
-        "total": total,
+        "total": counts[0],
+        "matching": matching,
+        "counts": {"all": counts[0], "most": counts[1], "wanted_only": counts[2], "not": counts[3]},
         "items": [
             {"id": r[0], "full_name": r[1], "case_number": r[2], "notes": r[3],
              "created_at": r[4].isoformat(), "wanted": r[5], "status": r[6],
-         "most_wanted": r[7],
              "updated_at": r[7].isoformat(), "most_wanted": r[8]}
             for r in rows
         ],
@@ -204,9 +235,9 @@ def update_suspect(request: Request, suspect_id: int, body: SuspectUpdate,
         ).fetchone()
     if not row:
         raise HTTPException(404, "Not found")
-    summary = ", ".join(f"{k}={v}" for k, v in changes.items()
-                        if k in ("wanted", "most_wanted", "status"))
-    audit(pool, actor, "update_suspect", summary or "details", suspect_id)
+    summary = ", ".join(f"{k}={v}" if k in ("wanted", "most_wanted", "status") else f"{k} edited"
+                        for k, v in changes.items())
+    audit(pool, actor, "update_suspect", summary, suspect_id)
     return {"id": row[0], "full_name": row[1], "case_number": row[2], "notes": row[3],
             "wanted": row[4], "status": row[5], "updated_at": row[6].isoformat(),
             "most_wanted": row[7]}
@@ -436,12 +467,17 @@ def sign_out_officer(request: Request, officer_id: int, actor: str = Depends(req
 
 
 @app.get("/api/audit")
-def audit_log(request: Request, limit: int = 200, _: str = Depends(require_admin)):
+def audit_log(request: Request, limit: int = 200, suspect_id: int | None = None,
+              _: str = Depends(require_admin)):
+    """Audit entries, newest first; with suspect_id, only that person's history."""
     limit = max(1, min(limit, 1000))
+    where, params = "", []
+    if suspect_id is not None:
+        where, params = " WHERE suspect_id = %s", [suspect_id]
     with request.app.state.pool.connection() as conn:
         rows = conn.execute(
             "SELECT id, actor, action, result, suspect_id, top_similarity, created_at "
-            "FROM audit_log ORDER BY id DESC LIMIT %s", (limit,)).fetchall()
+            f"FROM audit_log{where} ORDER BY id DESC LIMIT %s", (*params, limit)).fetchall()
     return [
         {"id": r[0], "actor": r[1], "action": r[2], "result": r[3], "suspect_id": r[4],
          "top_similarity": r[5], "created_at": r[6].isoformat()}

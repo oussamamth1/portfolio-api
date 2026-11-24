@@ -5,138 +5,246 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Face Check Admin</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#667085; --line:#e3e6ea; --accent:#1d4ed8; --danger:#b42318; --ok:#067647; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d23; --text:#e8eaed; --muted:#98a2b3; --line:#2c3038; --accent:#6d9bff; --danger:#f97066; --ok:#47cd89; } }
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#667085; --line:#e3e6ea; --accent:#1d4ed8; --danger:#b42318; --ok:#067647; --most:#7a0d0d; --hover:#eef2f7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d23; --text:#e8eaed; --muted:#98a2b3; --line:#2c3038; --accent:#6d9bff; --danger:#f97066; --ok:#47cd89; --most:#c43c3c; --hover:#232730; } }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
-  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 64px; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  h1 { font-size: 22px; margin: 0; }
   h2 { font-size: 17px; margin: 0 0 12px; }
   .muted { color: var(--muted); font-size: 13px; }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 16px; }
   label { display:block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
-  input, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-  button { padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; margin-top: 12px; }
-  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); margin: 0; padding: 4px 10px; }
-  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-  .card { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .card img { width: 100%; aspect-ratio: 1; object-fit: cover; display:block; background: var(--line); }
-  .card div { padding: 8px 10px; }
+  input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  button.small { padding: 4px 10px; font-size: 13px; }
+  .keybox { display:flex; gap:8px; align-items:center; }
+  .keybox input { width: 240px; }
+  .tabs { display:flex; gap:4px; margin-top:16px; border-bottom:1px solid var(--line); overflow-x:auto; }
+  .tabs button { background:transparent; color:var(--muted); border-radius:6px 6px 0 0; border-bottom:2px solid transparent; white-space:nowrap; }
+  .tabs button.on { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
   .row { display:flex; gap: 12px; flex-wrap: wrap; }
-  .row > * { flex: 1 1 200px; }
-  #msg { margin-top: 8px; font-size: 14px; }
+  .row > * { flex: 1 1 180px; }
   .err { color: var(--danger); } .ok { color: var(--ok); }
-  table { width:100%; border-collapse: collapse; font-size: 13px; }
-  td, th { text-align:left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  table { width:100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align:left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
   .tablewrap { overflow-x: auto; }
-  select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-  .badge { display:inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin: 4px 0; }
+  .badge { display:inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .badge.most { background: var(--most); color: #fff; }
   .badge.wanted { background: var(--danger); color: #fff; }
-  .badge.most { background: #7a0d0d; color: #fff; }
   .badge.notwanted { background: var(--line); color: var(--text); }
   .check { display:flex; align-items:center; gap: 6px; margin: 8px 0 0; color: var(--text); font-size: 14px; }
   .check input { width: auto; }
-  .actions { display:flex; gap: 8px; align-items:center; margin-top: 8px; }
-  .actions button { margin: 0; padding: 4px 10px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { background: transparent; color: var(--text); border:1px solid var(--line); border-radius:999px; padding:4px 12px; font-size:13px; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color:#fff; }
+  .filters { display:grid; grid-template-columns: 2fr 1fr 1fr; gap:10px; margin: 12px 0; }
+  @media (max-width: 640px) { .filters { grid-template-columns: 1fr; } }
+  tr.person { cursor:pointer; }
+  tr.person:hover { background: var(--hover); }
+  .thumb { width:44px; height:44px; border-radius:6px; object-fit:cover; background: var(--line); display:block; }
+  .pager { display:flex; gap:8px; align-items:center; justify-content:flex-end; margin-top:10px; }
+  dialog { border:1px solid var(--line); border-radius:12px; padding:0; width:min(720px, calc(100vw - 32px)); background:var(--card); color:var(--text); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .dlg-head { display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); }
+  .dlg-body { padding:16px; max-height: calc(100vh - 160px); overflow:auto; }
+  .detail { display:grid; grid-template-columns: 200px 1fr; gap:16px; }
+  @media (max-width: 600px) { .detail { grid-template-columns: 1fr; } }
+  .detail img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; background:var(--line); }
+  .actions { display:flex; gap: 8px; align-items:center; flex-wrap:wrap; margin-top: 14px; }
+  .history { font-size:13px; margin-top: 16px; }
+  .history li { margin: 4px 0; }
+  .hidden { display:none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Face Check Admin</h1>
-  <p class="muted">Results are possible matches only. An officer must always verify identity before acting.</p>
-
-  <section>
-    <h2>Admin key</h2>
-    <div class="row">
-      <div><input id="key" type="password" placeholder="ADMIN_API_KEY"></div>
+  <header>
+    <div>
+      <h1>Face Check Admin</h1>
+      <p class="muted" style="margin:2px 0 0">Results are possible matches only. An officer must always verify identity before acting.</p>
     </div>
-    <button onclick="saveKey()">Connect</button>
-  </section>
+    <div class="keybox">
+      <input id="key" type="password" placeholder="ADMIN_API_KEY" aria-label="Admin key">
+      <button onclick="saveKey()">Connect</button>
+    </div>
+  </header>
 
-  <section>
-    <h2>Add a person</h2>
-    <form id="addForm">
-      <div class="row">
-        <div><label>Full name</label><input name="full_name" required></div>
-        <div><label>Case number</label><input name="case_number" required></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="people" class="on">People</button>
+    <button data-tab="officers">Officers</button>
+    <button data-tab="test">Test identification</button>
+    <button data-tab="audit">Audit log</button>
+  </nav>
+
+  <!-- People -->
+  <div data-panel="people">
+    <section>
+      <div class="row" style="align-items:center">
+        <h2 style="margin:0">People <span id="total" class="muted"></span></h2>
+        <div style="flex:0 0 auto"><button onclick="toggleAdd()">+ Add person</button></div>
       </div>
-      <div class="row">
-        <div><label>Status</label><select name="status" id="addStatus"></select></div>
-        <div><label>&nbsp;</label><label class="check"><input type="checkbox" id="addWanted" checked> Wanted by police</label>
-          <label class="check"><input type="checkbox" id="addMost"> Most wanted</label></div>
+
+      <form id="addForm" class="hidden" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line)">
+        <div class="row">
+          <div><label>Full name</label><input name="full_name" required minlength="2"></div>
+          <div><label>Case number</label><input name="case_number" required></div>
+        </div>
+        <div class="row">
+          <div><label>Status</label><select name="status" id="addStatus"></select></div>
+          <div><label>&nbsp;</label>
+            <label class="check"><input type="checkbox" id="addWanted" checked> Wanted by police</label>
+            <label class="check"><input type="checkbox" id="addMost"> Most wanted</label></div>
+        </div>
+        <label>Notes</label><textarea name="notes" rows="2"></textarea>
+        <label>Photo (one clear, front-facing face)</label><input name="photo" type="file" accept="image/*" required>
+        <div class="actions"><button type="submit">Add</button><button type="button" class="ghost" onclick="toggleAdd()">Cancel</button></div>
+        <div id="msg"></div>
+      </form>
+
+      <div class="chips" id="wantedChips" style="margin-top:14px"></div>
+      <div class="filters">
+        <input id="q" placeholder="Search name, case number or notes" aria-label="Search">
+        <select id="fStatus" aria-label="Status filter"></select>
+        <select id="fSort" aria-label="Sort">
+          <option value="updated">Recently updated</option>
+          <option value="newest">Recently added</option>
+          <option value="name">Name A–Z</option>
+        </select>
       </div>
-      <label>Notes</label><textarea name="notes" rows="2"></textarea>
-      <label>Photo (one clear, front-facing face)</label><input name="photo" type="file" accept="image/*" required>
-      <button type="submit">Add</button>
-      <div id="msg"></div>
-    </form>
-  </section>
-
-  <section>
-    <h2>Officers</h2>
-    <p class="muted">Each officer signs in to the mobile app with their badge number and password.
-      Disabling an account or resetting its password signs that officer out on every phone.</p>
-    <form id="officerForm">
-      <div class="row">
-        <div><label>Badge number</label><input name="badge" required maxlength="64"></div>
-        <div><label>Full name</label><input name="full_name" required minlength="2"></div>
-        <div><label>Password (min 8 characters)</label><input name="password" type="text" required minlength="8" autocomplete="off"></div>
+      <div class="tablewrap"><table id="people"></table></div>
+      <div class="pager">
+        <span class="muted" id="pageInfo"></span>
+        <button class="ghost small" id="prev">Previous</button>
+        <button class="ghost small" id="next">Next</button>
       </div>
-      <button type="submit">Create officer account</button>
-      <div id="omsg"></div>
-    </form>
-    <div class="tablewrap" style="margin-top:12px"><table id="officers"></table></div>
-  </section>
+    </section>
+  </div>
 
-  <section>
-    <h2>Test identification</h2>
-    <p class="muted">Runs the same check as the officer app, logged as "admin".</p>
-    <label>Photo</label><input id="testPhoto" type="file" accept="image/*">
-    <button onclick="testIdentify()">Identify</button>
-    <div id="testResult"></div>
-  </section>
+  <!-- Officers -->
+  <div data-panel="officers" class="hidden">
+    <section>
+      <h2>Officers</h2>
+      <p class="muted">Each officer signs in to the mobile app with their badge number and password.
+        Disabling an account or resetting its password signs that officer out on every phone.</p>
+      <form id="officerForm">
+        <div class="row">
+          <div><label>Badge number</label><input name="badge" required maxlength="64"></div>
+          <div><label>Full name</label><input name="full_name" required minlength="2"></div>
+          <div><label>Password (min 8 characters)</label><input name="password" type="text" required minlength="8" autocomplete="off"></div>
+        </div>
+        <div class="actions"><button type="submit">Create officer account</button></div>
+        <div id="omsg"></div>
+      </form>
+      <div class="tablewrap" style="margin-top:12px"><table id="officers"></table></div>
+    </section>
+  </div>
 
-  <section>
-    <h2>People in database <span id="total" class="muted"></span></h2>
-    <input id="q" placeholder="Search name or case number" oninput="loadList()">
-    <div id="list" class="grid" style="margin-top:12px"></div>
-  </section>
+  <!-- Test -->
+  <div data-panel="test" class="hidden">
+    <section>
+      <h2>Test identification</h2>
+      <p class="muted">Runs the same check as the officer app, logged as "admin".</p>
+      <label>Photo</label><input id="testPhoto" type="file" accept="image/*">
+      <div class="actions"><button onclick="testIdentify()">Identify</button></div>
+      <div id="testResult"></div>
+    </section>
+  </div>
 
-  <section>
-    <h2>Audit log</h2>
-    <div class="tablewrap"><table id="audit"></table></div>
-  </section>
+  <!-- Audit -->
+  <div data-panel="audit" class="hidden">
+    <section>
+      <h2>Audit log</h2>
+      <div class="tablewrap"><table id="audit"></table></div>
+    </section>
+  </div>
 </main>
+
+<!-- Person detail / edit -->
+<dialog id="dlg">
+  <div class="dlg-head">
+    <strong id="dTitle">Person</strong>
+    <button class="ghost small" onclick="$('dlg').close()">Close</button>
+  </div>
+  <div class="dlg-body">
+    <form id="editForm">
+      <div class="detail">
+        <div>
+          <img id="dPhoto" alt="">
+          <p class="muted" id="dMeta"></p>
+        </div>
+        <div>
+          <label>Full name</label><input name="full_name" required minlength="2">
+          <label>Case number</label><input name="case_number" required>
+          <label>Status</label><select name="status" id="dStatus"></select>
+          <label class="check"><input type="checkbox" id="dWanted"> Wanted by police</label>
+          <label class="check"><input type="checkbox" id="dMost"> Most wanted</label>
+          <label>Notes</label><textarea name="notes" rows="4"></textarea>
+          <div class="actions">
+            <button type="submit">Save changes</button>
+            <button type="button" class="danger" onclick="delCurrent()">Remove person</button>
+            <span id="dMsg"></span>
+          </div>
+        </div>
+      </div>
+    </form>
+    <div class="history">
+      <strong>History</strong>
+      <ul id="dHistory"></ul>
+    </div>
+  </div>
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
+const STATUSES = { open: 'Open case', investigating: 'Under investigation', arrested: 'Arrested', released: 'Released', closed: 'Case closed' };
+const WANTED = [['', 'All', 'all'], ['most', 'Most wanted', 'most'], ['wanted_only', 'Wanted', 'wanted_only'], ['not', 'Not wanted', 'not']];
+const PAGE = 50;
+const jsonHeaders = { 'Content-Type': 'application/json' };
+
 let KEY = '';
 try { KEY = sessionStorage.getItem('adminKey') || ''; } catch (e) {}
 $('key').value = KEY;
 
-const STATUSES = { open: 'Open case', investigating: 'Under investigation', arrested: 'Arrested', released: 'Released', closed: 'Case closed' };
+const filter = { wanted: '', page: 0 };
+let current = null;   // person open in the dialog
+let people = [];
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 const statusOptions = (cur) => Object.entries(STATUSES).map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('');
-$('addStatus').innerHTML = statusOptions('open');
+const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
 
 function badge(p) {
   if (p.most_wanted) return '<span class="badge most">MOST WANTED</span>';
   return p.wanted ? '<span class="badge wanted">WANTED</span>' : '<span class="badge notwanted">Not wanted</span>';
 }
 
-function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+$('addStatus').innerHTML = statusOptions('open');
+$('dStatus').innerHTML = statusOptions('open');
+$('fStatus').innerHTML = '<option value="">All statuses</option>' + statusOptions('');
 
 async function api(path, opts = {}, key = KEY, extra = {}) {
   const res = await fetch(path, { ...opts, headers: { 'X-Api-Key': key, ...extra } });
   if (!res.ok) {
     let detail = res.statusText;
-    try { const j = await res.json(); detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (e) {}
+    try { const j = await res.json(); detail = typeof j.detail === 'string' ? j.detail : (j.detail || []).map(d => d.msg).join('; '); } catch (e) {}
     throw new Error(detail);
   }
   return res;
 }
 
-async function photoUrl(id) {
-  const res = await api(`/api/suspects/${id}/photo`);
-  return URL.createObjectURL(await res.blob());
+const photoCache = new Map();
+function photoUrl(id) {
+  id = String(id);
+  if (!photoCache.has(id)) {
+    photoCache.set(id, api(`/api/suspects/${id}/photo`).then(r => r.blob()).then(b => URL.createObjectURL(b))
+      .catch(e => { photoCache.delete(id); throw e; }));
+  }
+  return photoCache.get(id);
 }
 
 function saveKey() {
@@ -145,56 +253,152 @@ function saveKey() {
   refresh();
 }
 
+// ---------- tabs ----------
+$('tabs').addEventListener('click', (ev) => {
+  const t = ev.target.closest('button[data-tab]');
+  if (!t) return;
+  for (const b of $('tabs').querySelectorAll('button')) b.classList.toggle('on', b === t);
+  for (const p of document.querySelectorAll('[data-panel]')) p.classList.toggle('hidden', p.dataset.panel !== t.dataset.tab);
+  if (t.dataset.tab === 'audit') loadAudit();
+  if (t.dataset.tab === 'officers') loadOfficers();
+});
+
+// ---------- people list ----------
+function renderChips(counts = {}) {
+  $('wantedChips').innerHTML = WANTED.map(([v, label, k]) =>
+    `<button class="chip${filter.wanted === v ? ' on' : ''}" data-v="${v}">${label}${counts[k] != null ? ` (${counts[k]})` : ''}</button>`).join('');
+}
+$('wantedChips').addEventListener('click', (ev) => {
+  const c = ev.target.closest('.chip');
+  if (!c) return;
+  filter.wanted = c.dataset.v; filter.page = 0; loadList();
+});
+
+let searchTimer;
+$('q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { filter.page = 0; loadList(); }, 300); });
+$('fStatus').addEventListener('change', () => { filter.page = 0; loadList(); });
+$('fSort').addEventListener('change', () => { filter.page = 0; loadList(); });
+$('prev').addEventListener('click', () => { if (filter.page > 0) { filter.page--; loadList(); } });
+$('next').addEventListener('click', () => { filter.page++; loadList(); });
+
 async function loadList() {
-  if (!KEY) return;
-  const q = encodeURIComponent($('q').value);
+  if (!KEY) { renderChips(); $('people').innerHTML = '<tr><td class="muted">Enter the admin key above and click Connect.</td></tr>'; return; }
+  const p = new URLSearchParams({ limit: PAGE, offset: filter.page * PAGE, sort: $('fSort').value });
+  if ($('q').value.trim()) p.set('q', $('q').value.trim());
+  if (filter.wanted) p.set('wanted', filter.wanted);
+  if ($('fStatus').value) p.set('status', $('fStatus').value);
   try {
-    const data = await (await api(`/api/suspects?q=${q}`)).json();
+    const data = await (await api(`/api/suspects?${p}`)).json();
+    people = data.items;
     $('total').textContent = `(${data.total})`;
-    $('list').innerHTML = data.items.map(s => `
-      <div class="card">
-        <img data-id="${s.id}" alt="">
-        <div><strong>${esc(s.full_name)}</strong><br>
-        <span class="muted">Case ${esc(s.case_number)}</span><br>
-        ${badge(s)}
-        <span class="muted">${esc(STATUSES[s.status] || s.status)}</span>
-        <select id="st-${s.id}">${statusOptions(s.status)}</select>
-        <label class="check"><input type="checkbox" id="w-${s.id}"${s.wanted ? ' checked' : ''}> Wanted</label>
-        <label class="check"><input type="checkbox" id="mw-${s.id}"${s.most_wanted ? ' checked' : ''}> Most wanted</label>
-        <div class="actions"><button onclick="saveStatus(${s.id})">Save</button>
-        <button class="danger" onclick="del(${s.id})">Remove</button></div>
-        <div id="m-${s.id}" class="muted"></div></div>
-      </div>`).join('') || '<p class="muted">No one yet.</p>';
-    for (const img of $('list').querySelectorAll('img[data-id]')) {
+    renderChips(data.counts);
+    const from = data.matching ? filter.page * PAGE + 1 : 0, to = filter.page * PAGE + data.items.length;
+    $('pageInfo').textContent = `${from}–${to} of ${data.matching}`;
+    $('prev').disabled = filter.page === 0;
+    $('next').disabled = to >= data.matching;
+    $('people').innerHTML = '<tr><th></th><th>Name</th><th>Case</th><th>Wanted</th><th>Status</th><th>Updated</th></tr>' +
+      (data.items.map(s => `
+        <tr class="person" data-id="${s.id}" tabindex="0">
+          <td><img class="thumb" data-id="${s.id}" alt=""></td>
+          <td><strong>${esc(s.full_name)}</strong></td>
+          <td>${esc(s.case_number)}</td>
+          <td>${badge(s)}</td>
+          <td>${esc(STATUSES[s.status] || s.status)}</td>
+          <td class="muted">${when(s.updated_at)}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="muted">No one matches these filters.</td></tr>');
+    for (const img of $('people').querySelectorAll('img[data-id]')) {
       photoUrl(img.dataset.id).then(u => img.src = u).catch(() => {});
     }
-  } catch (e) { $('list').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  } catch (e) { $('people').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
 }
 
-async function loadAudit() {
-  if (!KEY) return;
+$('people').addEventListener('click', (ev) => {
+  const tr = ev.target.closest('tr.person');
+  if (tr) openPerson(+tr.dataset.id);
+});
+$('people').addEventListener('keydown', (ev) => {
+  const tr = ev.target.closest('tr.person');
+  if (tr && ev.key === 'Enter') openPerson(+tr.dataset.id);
+});
+
+// ---------- person detail ----------
+function openPerson(id) {
+  current = people.find(p => p.id === id);
+  if (!current) return;
+  const f = $('editForm');
+  f.full_name.value = current.full_name;
+  f.case_number.value = current.case_number;
+  f.notes.value = current.notes || '';
+  $('dStatus').value = current.status;
+  $('dWanted').checked = current.wanted;
+  $('dMost').checked = current.most_wanted;
+  $('dTitle').innerHTML = `${esc(current.full_name)} ${badge(current)}`;
+  $('dMeta').textContent = `#${current.id} · added ${when(current.created_at)} · updated ${when(current.updated_at)}`;
+  $('dMsg').textContent = '';
+  $('dPhoto').removeAttribute('src');
+  photoUrl(id).then(u => { if (current && current.id === id) $('dPhoto').src = u; }).catch(() => {});
+  loadHistory(id);
+  $('dlg').showModal();
+}
+
+$('dMost').addEventListener('change', () => { if ($('dMost').checked) $('dWanted').checked = true; });
+$('dWanted').addEventListener('change', () => { if (!$('dWanted').checked) $('dMost').checked = false; });
+$('addMost').addEventListener('change', () => { if ($('addMost').checked) $('addWanted').checked = true; });
+$('addWanted').addEventListener('change', () => { if (!$('addWanted').checked) $('addMost').checked = false; });
+
+const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed' };
+async function loadHistory(id) {
+  $('dHistory').innerHTML = '<li class="muted">Loading...</li>';
   try {
-    const rows = await (await api('/api/audit?limit=50')).json();
-    $('audit').innerHTML = '<tr><th>Time</th><th>Who</th><th>Action</th><th>Result</th><th>Person</th><th>Score</th></tr>' +
-      rows.map(r => `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.actor)}</td><td>${esc(r.action)}</td>
-        <td>${esc(r.result)}</td><td>${r.suspect_id ?? ''}</td><td>${r.top_similarity != null ? r.top_similarity.toFixed(2) : ''}</td></tr>`).join('');
-  } catch (e) { $('audit').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+    const rows = await (await api(`/api/audit?suspect_id=${id}&limit=50`)).json();
+    $('dHistory').innerHTML = rows.map(r => {
+      const what = r.action === 'identify'
+        ? `matched in a photo check (${r.top_similarity != null ? Math.round(r.top_similarity * 100) + '%' : ''})`
+        : `${ACTIONS[r.action] || r.action}${r.result && r.result !== 'ok' ? ': ' + esc(r.result) : ''}`;
+      return `<li><span class="muted">${when(r.created_at)}</span> · ${esc(r.actor)} · ${what}</li>`;
+    }).join('') || '<li class="muted">No history yet.</li>';
+  } catch (e) { $('dHistory').innerHTML = `<li class="err">${esc(e.message)}</li>`; }
 }
 
-async function saveStatus(id) {
-  const most = $(`mw-${id}`).checked;
-  const body = JSON.stringify({ status: $(`st-${id}`).value, wanted: $(`w-${id}`).checked || most, most_wanted: most });
-  $(`m-${id}`).textContent = 'Saving...';
+$('editForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  if (!current) return;
+  const f = ev.target;
+  const next = {
+    full_name: f.full_name.value.trim(),
+    case_number: f.case_number.value.trim(),
+    notes: f.notes.value.trim() || null,
+    status: $('dStatus').value,
+    wanted: $('dWanted').checked,
+    most_wanted: $('dMost').checked,
+  };
+  const changes = {};
+  for (const [k, v] of Object.entries(next)) if (v !== (current[k] ?? null)) changes[k] = v;
+  if (!Object.keys(changes).length) { $('dMsg').innerHTML = '<span class="muted">No changes.</span>'; return; }
+  $('dMsg').textContent = 'Saving...';
   try {
-    await api(`/api/suspects/${id}`, { method: 'PATCH', body }, KEY, { 'Content-Type': 'application/json' });
-    refresh();
-  } catch (e) { $(`m-${id}`).innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    const updated = await (await api(`/api/suspects/${current.id}`, { method: 'PATCH', body: JSON.stringify(changes) }, KEY, jsonHeaders)).json();
+    Object.assign(current, updated);
+    $('dTitle').innerHTML = `${esc(current.full_name)} ${badge(current)}`;
+    $('dMeta').textContent = `#${current.id} · added ${when(current.created_at)} · updated ${when(current.updated_at)}`;
+    $('dMsg').innerHTML = '<span class="ok">Saved.</span>';
+    loadHistory(current.id);
+    loadList();
+  } catch (e) { $('dMsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+});
+
+async function delCurrent() {
+  if (!current || !confirm(`Remove ${current.full_name} and their photo from the database? This cannot be undone.`)) return;
+  try {
+    await api(`/api/suspects/${current.id}`, { method: 'DELETE' });
+    photoCache.delete(String(current.id));
+    $('dlg').close();
+    loadList();
+  } catch (e) { $('dMsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
 }
 
-async function del(id) {
-  try { await api(`/api/suspects/${id}`, { method: 'DELETE' }); refresh(); }
-  catch (e) { $('msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
-}
+// ---------- add person ----------
+function toggleAdd() { $('addForm').classList.toggle('hidden'); $('msg').textContent = ''; }
 
 $('addForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -205,12 +409,58 @@ $('addForm').addEventListener('submit', async (ev) => {
     fd.set('wanted', $('addWanted').checked || most ? 'true' : 'false');
     fd.set('most_wanted', most ? 'true' : 'false');
     const r = await (await api('/api/suspects', { method: 'POST', body: fd })).json();
-    $('msg').innerHTML = `<span class="ok">Added #${r.id}</span>`;
+    $('msg').innerHTML = `<span class="ok">Added #${r.id} ${esc(r.full_name)}</span>`;
     ev.target.reset();
-    refresh();
+    $('addWanted').checked = true;
+    loadList();
   } catch (e) { $('msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
 });
 
+// ---------- officers ----------
+async function loadOfficers() {
+  if (!KEY) return;
+  try {
+    const rows = await (await api('/api/officers')).json();
+    $('officers').innerHTML = '<tr><th>Badge</th><th>Name</th><th>Account</th><th>Last sign-in</th><th>Phones signed in</th><th></th></tr>' +
+      (rows.map(o => `<tr>
+        <td>${esc(o.badge)}</td><td>${esc(o.full_name)}</td>
+        <td>${o.active ? '<span class="ok">Active</span>' : '<span class="err">Disabled</span>'}</td>
+        <td>${o.last_login_at ? when(o.last_login_at) : 'Never'}</td>
+        <td>${o.sessions}</td>
+        <td style="white-space:nowrap">
+          <button class="danger small" onclick="setActive(${o.id}, ${!o.active})">${o.active ? 'Disable' : 'Enable'}</button>
+          <button class="ghost small" onclick="resetPw(${o.id}, '${esc(o.badge)}')">Reset password</button>
+          <button class="ghost small" onclick="signOut(${o.id})">Sign out phones</button>
+        </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No officer accounts yet.</td></tr>');
+  } catch (e) { $('officers').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+}
+
+async function officerAction(fn) {
+  try { await fn(); $('omsg').textContent = ''; loadOfficers(); }
+  catch (e) { $('omsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+function setActive(id, active) {
+  officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) }, KEY, jsonHeaders));
+}
+function resetPw(id, badgeNo) {
+  const password = window.prompt(`New password for badge ${badgeNo} (min 8 characters):`);
+  if (!password) return;
+  officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ password }) }, KEY, jsonHeaders));
+}
+function signOut(id) { officerAction(() => api(`/api/officers/${id}/signout`, { method: 'POST' })); }
+
+$('officerForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = JSON.stringify(Object.fromEntries(new FormData(ev.target)));
+  try {
+    const o = await (await api('/api/officers', { method: 'POST', body }, KEY, jsonHeaders)).json();
+    $('omsg').innerHTML = `<span class="ok">Account created for badge ${esc(o.badge)}. Give the officer their badge number and password.</span>`;
+    ev.target.reset();
+    loadOfficers();
+  } catch (e) { $('omsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+});
+
+// ---------- test identification ----------
 async function testIdentify() {
   const f = $('testPhoto').files[0];
   if (!f) return;
@@ -222,61 +472,21 @@ async function testIdentify() {
     if (!r.matches.length) { $('testResult').innerHTML = `<p class="ok">No match (threshold ${r.threshold}).</p>`; }
     else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
       `<p><strong>${esc(m.full_name)}</strong> ${badge(m)} ${esc(STATUSES[m.status] || m.status)} - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
-    loadAudit();
   } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
-const jsonHeaders = { 'Content-Type': 'application/json' };
-
-async function loadOfficers() {
+// ---------- audit ----------
+async function loadAudit() {
   if (!KEY) return;
   try {
-    const rows = await (await api('/api/officers')).json();
-    $('officers').innerHTML = '<tr><th>Badge</th><th>Name</th><th>Account</th><th>Last sign-in</th><th>Phones signed in</th><th></th></tr>' +
-      (rows.map(o => `<tr>
-        <td>${esc(o.badge)}</td><td>${esc(o.full_name)}</td>
-        <td>${o.active ? '<span class="ok">Active</span>' : '<span class="err">Disabled</span>'}</td>
-        <td>${o.last_login_at ? new Date(o.last_login_at).toLocaleString() : 'Never'}</td>
-        <td>${o.sessions}</td>
-        <td style="white-space:nowrap">
-          <button class="danger" onclick="setActive(${o.id}, ${!o.active})">${o.active ? 'Disable' : 'Enable'}</button>
-          <button class="danger" onclick="resetPw(${o.id}, '${esc(o.badge)}')">Reset password</button>
-          <button class="danger" onclick="signOut(${o.id})">Sign out phones</button>
-        </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No officer accounts yet.</td></tr>');
-  } catch (e) { $('officers').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+    const rows = await (await api('/api/audit?limit=100')).json();
+    $('audit').innerHTML = '<tr><th>Time</th><th>Who</th><th>Action</th><th>Result</th><th>Person</th><th>Score</th></tr>' +
+      rows.map(r => `<tr><td>${when(r.created_at)}</td><td>${esc(r.actor)}</td><td>${esc(r.action)}</td>
+        <td>${esc(r.result)}</td><td>${r.suspect_id ?? ''}</td><td>${r.top_similarity != null ? r.top_similarity.toFixed(2) : ''}</td></tr>`).join('');
+  } catch (e) { $('audit').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
 }
 
-async function officerAction(fn) {
-  try { await fn(); $('omsg').textContent = ''; refresh(); }
-  catch (e) { $('omsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
-}
-
-function setActive(id, active) {
-  officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) }, KEY, jsonHeaders));
-}
-
-function resetPw(id, badge) {
-  const password = window.prompt(`New password for badge ${badge} (min 8 characters):`);
-  if (!password) return;
-  officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ password }) }, KEY, jsonHeaders));
-}
-
-function signOut(id) {
-  officerAction(() => api(`/api/officers/${id}/signout`, { method: 'POST' }));
-}
-
-$('officerForm').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const body = JSON.stringify(Object.fromEntries(new FormData(ev.target)));
-  try {
-    const o = await (await api('/api/officers', { method: 'POST', body }, KEY, jsonHeaders)).json();
-    $('omsg').innerHTML = `<span class="ok">Account created for badge ${esc(o.badge)}. Give the officer their badge number and password.</span>`;
-    ev.target.reset();
-    refresh();
-  } catch (e) { $('omsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
-});
-
-function refresh() { loadList(); loadOfficers(); loadAudit(); }
+function refresh() { photoCache.clear(); loadList(); loadOfficers(); loadAudit(); }
 refresh();
 </script>
 </body>

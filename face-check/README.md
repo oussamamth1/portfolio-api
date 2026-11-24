@@ -31,7 +31,7 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | `/api/suspects` | admin | Add a person (form: `full_name`, `case_number`, `notes`, `wanted`, `most_wanted`, `status`, `photo`) |
-| GET | `/api/suspects?q=` | admin | List and search |
+| GET | `/api/suspects?q=&wanted=&status=&sort=` | admin | List with filters: `wanted` = `most`, `wanted`, `wanted_only`, `not`; `sort` = `updated`, `newest`, `name` |
 | PATCH | `/api/suspects/{id}` | admin | JSON: any of `full_name`, `case_number`, `notes`, `wanted`, `most_wanted`, `status` |
 | DELETE | `/api/suspects/{id}` | admin | Remove |
 | GET | `/api/suspects/{id}/photo` | admin or officer | Reference photo |
@@ -43,7 +43,7 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 | GET / POST | `/api/officers` | admin | List / create officer accounts (`badge`, `full_name`, `password`) |
 | PATCH | `/api/officers/{id}` | admin | JSON: any of `full_name`, `password`, `active` |
 | POST | `/api/officers/{id}/signout` | admin | Sign the officer out on every phone |
-| GET | `/api/audit` | admin | Who checked what, and when |
+| GET | `/api/audit?suspect_id=` | admin | Who checked what, and when (optionally for one person) |
 
 `status` is one of `open`, `investigating`, `arrested`, `released`, `closed`.
 `most_wanted` implies `wanted`; setting `wanted` to false also clears `most_wanted`.
