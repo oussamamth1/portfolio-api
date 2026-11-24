@@ -158,6 +158,7 @@
       <p class="muted">Register each camera, then put its key in the edge box config
         (<code>edge/config.json</code>, see <code>edge/README.md</code>). The key is shown only once.</p>
       <form id="cameraForm">
+        <h2 id="cameraFormTitle" style="font-size:15px; margin:4px 0 0">Register a camera</h2>
         <div class="row">
           <div><label>Name</label><input name="name" required minlength="2" placeholder="Av. Habib Bourguiba - north crossing"></div>
           <div><label>Area</label><input name="area" placeholder="Sousse centre"></div>
@@ -167,7 +168,16 @@
           <div><label>Longitude</label><input name="lng" type="number" step="any" required placeholder="10.6084"></div>
           <div><label>Match threshold (empty = default)</label><input name="threshold" type="number" step="0.01" min="0.3" max="0.95"></div>
         </div>
-        <div class="actions"><button type="submit">Register camera</button></div>
+        <div class="actions" style="margin-top:8px">
+          <button type="button" class="ghost" id="useLocation">📍 Use my current location</button>
+          <span id="locInfo" class="muted"></span>
+        </div>
+        <p class="muted" style="margin:6px 0 0">Stand next to the camera with your phone and open this page there, so the
+          position is where the camera is. Officers get directions to this point.</p>
+        <div class="actions">
+          <button type="submit" id="cameraSubmit">Register camera</button>
+          <button type="button" class="ghost hidden" id="cameraCancel">Cancel</button>
+        </div>
         <div id="cmsg"></div>
       </form>
       <div class="tablewrap" style="margin-top:12px"><table id="cameras"></table></div>
@@ -670,15 +680,55 @@ function showKey(name, key) {
     <div class="keyshow">${esc(key)}</div>`;
 }
 
+let editingCamera = null;   // camera id while the form edits an existing camera
+
+function resetCameraForm() {
+  editingCamera = null;
+  $('cameraForm').reset();
+  $('cameraFormTitle').textContent = 'Register a camera';
+  $('cameraSubmit').textContent = 'Register camera';
+  $('cameraCancel').classList.add('hidden');
+  $('locInfo').textContent = '';
+}
+$('cameraCancel').addEventListener('click', resetCameraForm);
+
+$('useLocation').addEventListener('click', () => {
+  if (!navigator.geolocation) { $('locInfo').innerHTML = '<span class="err">This browser cannot give a location.</span>'; return; }
+  $('locInfo').textContent = 'Getting your position...';
+  $('useLocation').disabled = true;
+  navigator.geolocation.getCurrentPosition((pos) => {
+    $('useLocation').disabled = false;
+    const { latitude, longitude, accuracy } = pos.coords;
+    const f = $('cameraForm');
+    f.lat.value = latitude.toFixed(6);
+    f.lng.value = longitude.toFixed(6);
+    const acc = Math.round(accuracy);
+    $('locInfo').innerHTML = `${acc <= 50 ? '<span class="ok">' : '<span class="err">'}±${acc} m</span> · ` +
+      `<a href="https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}" target="_blank" rel="noopener">check on map</a>` +
+      (acc > 50 ? ' · not precise: a computer guesses from Wi-Fi. Use a phone with GPS on, outdoors, and try again.' : '');
+  }, (err) => {
+    $('useLocation').disabled = false;
+    $('locInfo').innerHTML = `<span class="err">${err.code === 1
+      ? 'Location permission refused - allow it for this site in the browser settings.'
+      : 'Could not get a position (' + esc(err.message) + '). Try again outdoors.'}</span>`;
+  }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+});
+
 $('cameraForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const f = Object.fromEntries(new FormData(ev.target));
   const body = { name: f.name.trim(), area: f.area.trim() || null, lat: parseFloat(f.lat), lng: parseFloat(f.lng),
                  threshold: f.threshold ? parseFloat(f.threshold) : null };
   try {
-    const c = await (await api('/api/cameras', { method: 'POST', body: JSON.stringify(body) }, KEY, jsonHeaders)).json();
-    ev.target.reset();
-    showKey(c.name, c.api_key);
+    if (editingCamera) {
+      await api(`/api/cameras/${editingCamera}`, { method: 'PATCH', body: JSON.stringify(body) }, KEY, jsonHeaders);
+      resetCameraForm();
+      $('cmsg').innerHTML = `<span class="ok">Saved ${esc(body.name)}.</span>`;
+    } else {
+      const c = await (await api('/api/cameras', { method: 'POST', body: JSON.stringify(body) }, KEY, jsonHeaders)).json();
+      resetCameraForm();
+      showKey(c.name, c.api_key);
+    }
     loadCameras();
   } catch (e) { $('cmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
 });
@@ -690,13 +740,19 @@ async function cameraPatch(id, body) {
 
 function editCamera(id) {
   const c = cameraById(id);
-  const name = prompt('Camera name:', c.name); if (name === null) return;
-  const area = prompt('Area:', c.area || ''); if (area === null) return;
-  const lat = prompt('Latitude:', c.lat); if (lat === null) return;
-  const lng = prompt('Longitude:', c.lng); if (lng === null) return;
-  const th = prompt('Match threshold (empty = default):', c.threshold ?? ''); if (th === null) return;
-  cameraPatch(id, { name: name.trim(), area: area.trim() || null, lat: parseFloat(lat), lng: parseFloat(lng),
-                    threshold: th.trim() ? parseFloat(th) : null });
+  const f = $('cameraForm');
+  editingCamera = id;
+  f.name.value = c.name;
+  f.area.value = c.area || '';
+  f.lat.value = c.lat;
+  f.lng.value = c.lng;
+  f.threshold.value = c.threshold ?? '';
+  $('cameraFormTitle').textContent = `Edit camera: ${c.name}`;
+  $('cameraSubmit').textContent = 'Save changes';
+  $('cameraCancel').classList.remove('hidden');
+  $('locInfo').textContent = '';
+  $('cmsg').textContent = '';
+  f.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function rotateKey(id) {

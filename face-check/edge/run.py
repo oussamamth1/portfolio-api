@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -66,7 +67,7 @@ class LatestFrame(threading.Thread):
 
     def run(self):
         while not self.stop.is_set():
-            cap = cv2.VideoCapture(self.source)
+            cap = open_capture(self.source)
             if not cap.isOpened():
                 self.connected = False
                 log.warning("[%s] cannot open %s - retrying in 5 s", self.name, _redact(self.source))
@@ -97,6 +98,29 @@ class LatestFrame(threading.Thread):
             return self.frame, self.frame_time
 
 
+def open_capture(source) -> cv2.VideoCapture:
+    """Webcam index or stream URL. On macOS a webcam goes straight to AVFoundation
+    (otherwise OpenCV tries other drivers first and floods the log)."""
+    if isinstance(source, int) and sys.platform == "darwin":
+        return cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
+    return cv2.VideoCapture(source)
+
+
+def request_webcam_access(sources: list) -> None:
+    """macOS asks for camera permission only from the main thread: open each local
+    webcam once here, before the camera threads start, so the prompt appears."""
+    if sys.platform != "darwin":
+        return
+    for src in sources:
+        if isinstance(src, int):
+            cap = open_capture(src)
+            ok = cap.isOpened() and cap.read()[0]
+            cap.release()
+            if not ok:
+                log.error("Webcam %d not available. Allow camera access for the app running this "
+                          "(System Settings > Privacy & Security > Camera), then start again.", src)
+
+
 def _redact(source) -> str:
     """Hide passwords in rtsp://user:pass@host URLs when logging."""
     s = str(source)
@@ -113,6 +137,9 @@ class CameraWorker(threading.Thread):
         self.key = cfg["key"]
         source = cfg["source"]
         self.source = int(source) if isinstance(source, str) and source.isdigit() else source
+        # Camera mounted sideways / phone held upright: turn frames so faces are upright.
+        self.rotate = {0: None, 90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180,
+                       270: cv2.ROTATE_90_COUNTERCLOCKWISE}[int(cfg.get("rotate", 0)) % 360]
         self.engine, self.sender, self.opts, self.stop = engine, sender, opts, stop
         self.reader = LatestFrame(self.source, self.name_, stop)
         self.tracker = Tracker(send_after_s=opts.send_after)
@@ -138,6 +165,8 @@ class CameraWorker(threading.Thread):
             self.stop.wait(max(0.0, interval - (time.time() - started)))
 
     def process(self, frame: np.ndarray, now: float):
+        if self.rotate is not None:
+            frame = cv2.rotate(frame, self.rotate)
         faces = self.engine.detector.detect(frame)
         self.stats["frames"] += 1
         shown = frame.copy() if self.opts.preview else None
@@ -297,6 +326,7 @@ def main():
     sender = Sender(server, model, stop)
     sender.start()
     cameras = [CameraWorker(c, engine, sender, opts, stop) for c in cfg["cameras"]]
+    request_webcam_access([cam.source for cam in cameras])
     for cam in cameras:
         cam.start()
     threading.Thread(target=heartbeat_loop, args=(server, cameras, model, stop), daemon=True).start()

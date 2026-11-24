@@ -14,7 +14,8 @@
     {
       "name": "Laptop webcam (testing)",
       "source": "0",
-      "key": "cam_PASTE_ANOTHER_KEY"
+      "key": "cam_PASTE_ANOTHER_KEY",
+      "rotate": 0
     }
   ]
 }

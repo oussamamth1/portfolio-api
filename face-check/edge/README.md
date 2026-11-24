@@ -40,6 +40,7 @@ cp edge/config.example.json edge/config.json   # then edit it
 | `send_after_s` | Someone staying in view is sent after this many seconds |
 | `cameras[].source` | `rtsp://user:pass@ip:554/...` for IP cameras, `http://.../video` for a phone IP-camera app, `"0"` for a USB/laptop webcam |
 | `cameras[].key` | Key from `/admin` → Cameras |
+| `cameras[].rotate` | `90`, `180` or `270` (clockwise) if the picture arrives sideways or upside down, e.g. a phone held upright or a camera mounted on its side. Faces must be upright to be detected |
 
 `config.json` contains camera passwords and keys: it is ignored by git; keep it readable only
 by the service user (`chmod 600 edge/config.json`).
