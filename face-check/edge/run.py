@@ -277,8 +277,9 @@ def live_view_loop(server: Server, cam: CameraWorker, stop: threading.Event):
                 if not live:
                     stop.wait(2)
                 continue
-            frame, _ = cam.reader.latest()
-            if frame is None:
+            frame, taken = cam.reader.latest()
+            if frame is None or time.time() - taken > 3:
+                # No fresh video (camera down): send nothing rather than a frozen picture.
                 stop.wait(0.5)
                 continue
             if cam.rotate is not None:
