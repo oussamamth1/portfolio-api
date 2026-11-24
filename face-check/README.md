@@ -62,7 +62,8 @@ memory and **never stored**.
 
 When an officer reports a wanted person, the server stores the field photo and location and
 notifies every other signed-in officer whose phone reported a location within the last
-`LOCATION_MAX_AGE_MIN` minutes (default 120) and is within the alert radius (default 5 km,
+`LOCATION_MAX_AGE_MIN` minutes (default 10; the app reports every 15 s while moving and every minute
+while still, also in the background) and is within the alert radius (default 5 km,
 set on `/admin`). The same officer reporting the same person within 10 minutes reuses the
 first alert. Field photos are deleted after `ALERT_RETENTION_DAYS` (default 30).
 
