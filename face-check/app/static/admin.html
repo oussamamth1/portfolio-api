@@ -242,6 +242,20 @@
   </div>
 </main>
 
+<!-- Camera live view -->
+<dialog id="liveDlg">
+  <div class="dlg-head">
+    <strong><span class="badge wanted" id="liveBadge">LIVE</span> <span id="liveTitle"></span></strong>
+    <button class="ghost small" onclick="closeLive()">Close</button>
+  </div>
+  <div class="dlg-body" style="text-align:center">
+    <img id="liveImg" alt="" style="max-width:100%; max-height:70vh; border-radius:8px; background:#000; display:none; margin:0 auto">
+    <p id="liveStatus" class="muted">Connecting to the camera...</p>
+    <p class="muted" style="font-size:12px">Frames are sent only while this window is open and are not recorded.
+      Opening the live view is written to the audit log. Green box = face good enough to check.</p>
+  </div>
+</dialog>
+
 <!-- Person detail / edit -->
 <dialog id="dlg">
   <div class="dlg-head">
@@ -427,7 +441,7 @@ $('dWanted').addEventListener('change', () => { if (!$('dWanted').checked) $('dM
 $('addMost').addEventListener('change', () => { if ($('addMost').checked) $('addWanted').checked = true; });
 $('addWanted').addEventListener('change', () => { if (!$('addWanted').checked) $('addMost').checked = false; });
 
-const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed', alert: 'Alert sent', camera_match: 'Seen by a street camera', confirm_camera_match: 'Camera match confirmed', reject_camera_match: 'Camera match rejected' };
+const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed', alert: 'Alert sent', live_view: 'Live view opened', camera_match: 'Seen by a street camera', confirm_camera_match: 'Camera match confirmed', reject_camera_match: 'Camera match rejected' };
 async function loadHistory(id) {
   $('dHistory').innerHTML = '<li class="muted">Loading...</li>';
   try {
@@ -666,6 +680,7 @@ async function loadCameras() {
         <td>${c.effective_threshold}${c.threshold == null ? ' <span class="muted">(default)</span>' : ''}</td>
         <td>${c.pending_matches || ''}</td>
         <td style="white-space:nowrap">
+          <button class="small" onclick="openLive(${c.id})"${c.active ? '' : ' disabled'}>View live</button>
           <button class="ghost small" onclick="editCamera(${c.id})">Edit</button>
           <button class="${c.active ? 'danger' : 'ghost'} small" onclick="cameraPatch(${c.id}, { active: ${!c.active} })">${c.active ? 'Disable' : 'Enable'}</button>
           <button class="ghost small" onclick="rotateKey(${c.id})">New key</button>
@@ -768,6 +783,55 @@ async function deleteCamera(id) {
   try { await api(`/api/cameras/${id}`, { method: 'DELETE' }); loadCameras(); }
   catch (e) { $('cmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
 }
+
+// ---------- camera live view ----------
+let liveCam = null, liveTimer = null, liveKeepAlive = null, liveUrl = null, liveSince = 0;
+
+async function openLive(id) {
+  const c = cameraById(id);
+  liveCam = id; liveSince = Date.now();
+  $('liveTitle').textContent = c.name;
+  $('liveImg').style.display = 'none';
+  $('liveStatus').textContent = 'Connecting to the camera...';
+  $('liveDlg').showModal();
+  try { await api(`/api/cameras/${id}/live`, { method: 'POST' }); }
+  catch (e) { $('liveStatus').innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+  liveKeepAlive = setInterval(() => api(`/api/cameras/${id}/live`, { method: 'POST' }).catch(() => {}), 20000);
+  pollLive();
+}
+
+async function pollLive() {
+  const id = liveCam;
+  if (id == null) return;
+  try {
+    const r = await api(`/api/cameras/${id}/live.jpg`);
+    if (id !== liveCam) return;
+    if (r.status === 204) {
+      const waited = (Date.now() - liveSince) / 1000;
+      $('liveStatus').textContent = waited > 15
+        ? 'No picture from the camera. Is its edge box running and online (see the Cameras list)?'
+        : 'Connecting to the camera...';
+    } else {
+      const url = URL.createObjectURL(await r.blob());
+      $('liveImg').src = url;
+      $('liveImg').style.display = 'block';
+      if (liveUrl) URL.revokeObjectURL(liveUrl);
+      liveUrl = url;
+      const age = parseFloat(r.headers.get('X-Frame-Age') || '0');
+      $('liveStatus').textContent = `${new Date().toLocaleTimeString()} · ${age < 3 ? 'live' : 'delayed ' + age.toFixed(0) + ' s'}`;
+    }
+  } catch (e) { $('liveStatus').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  if (id === liveCam) liveTimer = setTimeout(pollLive, 500);
+}
+
+function closeLive() {
+  const id = liveCam;
+  liveCam = null;
+  clearTimeout(liveTimer); clearInterval(liveKeepAlive);
+  if (id != null) api(`/api/cameras/${id}/live`, { method: 'DELETE' }).catch(() => {});
+  if ($('liveDlg').open) $('liveDlg').close();
+}
+$('liveDlg').addEventListener('close', () => { if (liveCam != null) closeLive(); });
 
 // ---------- alerts ----------
 const alertPhotoCache = new Map();

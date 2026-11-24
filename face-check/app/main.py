@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1010,6 +1011,74 @@ async def edge_match_photo(request: Request, match_id: int, photo: UploadFile = 
     if not found:
         raise HTTPException(404, "No pending match with this id for this camera")
     return {"ok": True}
+
+
+# ---------- street cameras: live view ----------
+# Only while an admin is watching: the edge box is asked for frames, the server keeps
+# the newest one in memory (never in the database). Assumes one server process.
+
+LIVE_REQUEST_S = 60        # a viewer must renew every minute or the edge box stops sending
+LIVE_FRAME_MAX_AGE_S = 10  # older frames are not shown
+_live_lock = threading.Lock()
+_live_until: dict[int, float] = {}                   # camera id -> stop sending after
+_live_frames: dict[int, tuple[bytes, float]] = {}    # camera id -> (jpeg, received at)
+
+
+def _live_wanted(camera_id: int) -> bool:
+    with _live_lock:
+        return _live_until.get(camera_id, 0) > time.time()
+
+
+@app.post("/api/cameras/{camera_id}/live")
+def request_live_view(request: Request, camera_id: int, actor: str = Depends(require_admin)):
+    """Start or keep alive a live view. Call again at least every minute while watching."""
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        row = conn.execute("SELECT name FROM cameras WHERE id = %s", (camera_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    with _live_lock:
+        was_on = _live_until.get(camera_id, 0) > time.time()
+        _live_until[camera_id] = time.time() + LIVE_REQUEST_S
+    if not was_on:
+        audit(pool, actor, "live_view", row[0])
+    return {"ok": True, "expires_in_s": LIVE_REQUEST_S}
+
+
+@app.delete("/api/cameras/{camera_id}/live")
+def stop_live_view(camera_id: int, _: str = Depends(require_admin)):
+    with _live_lock:
+        _live_until.pop(camera_id, None)
+        _live_frames.pop(camera_id, None)
+    return {"ok": True}
+
+
+@app.get("/api/cameras/{camera_id}/live.jpg")
+def live_frame(camera_id: int, _: str = Depends(require_admin)):
+    with _live_lock:
+        frame = _live_frames.get(camera_id)
+    if not frame or time.time() - frame[1] > LIVE_FRAME_MAX_AGE_S:
+        return Response(status_code=204)  # no fresh frame yet
+    return Response(content=frame[0], media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Frame-Age": f"{time.time() - frame[1]:.1f}"})
+
+
+@app.get("/api/edge/live")
+def edge_live_wanted(cam: CameraAuth = Depends(camera_auth)):
+    """Edge box asks every few seconds whether someone is watching this camera."""
+    return {"live": _live_wanted(cam.id)}
+
+
+@app.post("/api/edge/live-frame")
+async def edge_live_frame(photo: UploadFile = File(...), cam: CameraAuth = Depends(camera_auth)):
+    if not _live_wanted(cam.id):
+        return {"live": False}  # nobody watching: drop it
+    data = await photo.read(2 * 1024 * 1024 + 1)
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Frame too large")
+    with _live_lock:
+        _live_frames[cam.id] = (data, time.time())
+    return {"live": True}
 
 
 # ---------- street cameras: review queue (admin / control room) ----------

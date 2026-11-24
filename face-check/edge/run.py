@@ -145,6 +145,7 @@ class CameraWorker(threading.Thread):
         self.tracker = Tracker(send_after_s=opts.send_after)
         self.active = True
         self.preview: np.ndarray | None = None
+        self.last_faces: list[tuple[np.ndarray, bool]] = []   # for the live view overlay
         self.stats = collections.Counter()
 
     def run(self):
@@ -169,6 +170,8 @@ class CameraWorker(threading.Thread):
             frame = cv2.rotate(frame, self.rotate)
         faces = self.engine.detector.detect(frame)
         self.stats["frames"] += 1
+        self.last_faces = [(f.bbox, f.det_score >= self.opts.min_det_score and f.kps is not None
+                            and float(f.bbox[2] - f.bbox[0]) >= self.opts.min_face_px) for f in faces]
         shown = frame.copy() if self.opts.preview else None
         for f in faces:
             width = float(f.bbox[2] - f.bbox[0])
@@ -260,6 +263,49 @@ class Sender(threading.Thread):
                 log.error("[%s] photo upload refused: %s %s", cam.name_, p.status_code, p.text[:200])
 
 
+def live_view_loop(server: Server, cam: CameraWorker, stop: threading.Event):
+    """Sends frames only while an admin is watching this camera on /admin (about 2 per second,
+    640 px, face boxes drawn). Otherwise just asks every 2 seconds whether someone is watching."""
+    live = False
+    while not stop.is_set():
+        try:
+            if not live:
+                r = server.call("GET", "/api/edge/live", cam.key)
+                live = r.status_code == 200 and r.json().get("live", False)
+                if live:
+                    log.info("[%s] live view opened on /admin - sending frames", cam.name_)
+                if not live:
+                    stop.wait(2)
+                continue
+            frame, _ = cam.reader.latest()
+            if frame is None:
+                stop.wait(0.5)
+                continue
+            if cam.rotate is not None:
+                frame = cv2.rotate(frame, cam.rotate)
+            else:
+                frame = frame.copy()
+            for bbox, usable in cam.last_faces:
+                x1, y1, x2, y2 = (int(v) for v in bbox)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0) if usable else (0, 165, 255),
+                              max(2, frame.shape[1] // 300))
+            s = 640 / max(frame.shape[:2])
+            if s < 1:
+                frame = cv2.resize(frame, (int(frame.shape[1] * s), int(frame.shape[0] * s)),
+                                   interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                r = server.call("POST", "/api/edge/live-frame", cam.key,
+                                files={"photo": ("live.jpg", buf.tobytes(), "image/jpeg")})
+                live = r.status_code == 200 and r.json().get("live", False)
+                if not live:
+                    log.info("[%s] live view closed", cam.name_)
+            stop.wait(0.5)
+        except requests.RequestException:
+            live = False
+            stop.wait(5)
+
+
 def heartbeat_loop(server: Server, cameras: list[CameraWorker], model: str, stop: threading.Event):
     first = True
     while first or not stop.wait(60):
@@ -330,6 +376,9 @@ def main():
     for cam in cameras:
         cam.start()
     threading.Thread(target=heartbeat_loop, args=(server, cameras, model, stop), daemon=True).start()
+    for cam in cameras:
+        threading.Thread(target=live_view_loop, args=(Server(cfg["server"]), cam, stop), daemon=True,
+                         name=f"live:{cam.name_}").start()
     log.info("running %d camera(s) at %.0f fps each - Ctrl+C to stop", len(cameras), opts.fps)
 
     while not stop.is_set():

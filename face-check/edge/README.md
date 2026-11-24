@@ -55,6 +55,10 @@ python -m edge.run --config edge/config.json             # normal operation
 In preview, a **green** box is a face good enough to match; **orange** is too small or unclear.
 Adjust camera angle and zoom until people walking past get green boxes of 100 px or more.
 
+**Live view:** `/admin` → Cameras → **View live** shows the camera at about 2 frames per second while
+the window is open (the edge box only sends frames then; nothing is recorded; each opening is
+audit-logged).
+
 The program reconnects to cameras and to the server by itself, keeps up to 500 detections
 while the network is down, and logs a status line per camera every minute. The camera shows
 as **Online** in `/admin` → Cameras while the edge box is running.
