@@ -66,6 +66,7 @@ class Track:
     best_det_score: float = 0.0
     best_face_px: float = 0.0
     sent: bool = False
+    last_sent: float = 0.0
     hits: int = 1
 
 
@@ -74,6 +75,7 @@ class Tracker:
     iou_threshold: float = 0.25
     lost_after_s: float = 1.0     # person gone: send their best face
     send_after_s: float = 3.0     # person still there: send after this long anyway
+    recheck_every_s: float = 10.0 # person stays in view: send their best face again this often (0 = never)
     tracks: dict[int, Track] = field(default_factory=dict)
     _next_id: int = 1
 
@@ -96,14 +98,30 @@ class Tracker:
         return best
 
     def ready(self, now: float) -> list[Track]:
-        """Tracks whose best face should be sent now. Finished tracks are removed."""
+        """Tracks whose best face should be sent now. Finished tracks are removed.
+
+        First check: when the person leaves, or after send_after_s if they stay.
+        Re-check: every recheck_every_s while they stay, with the best face of that period.
+        """
         out = []
         for tid in list(self.tracks):
             t = self.tracks[tid]
             gone = now - t.last_seen > self.lost_after_s
-            if not t.sent and t.best_embedding is not None and (gone or now - t.first_seen >= self.send_after_s):
-                t.sent = True
-                out.append(t)
+            if t.best_embedding is not None:
+                first = not t.sent and (gone or now - t.first_seen >= self.send_after_s)
+                again = (t.sent and not gone and self.recheck_every_s > 0
+                         and now - t.last_sent >= self.recheck_every_s)
+                if first or again:
+                    out.append(_snapshot(t))
+                    t.sent, t.last_sent = True, now
+                    # Start collecting the best face of the next period.
+                    t.best_quality, t.best_embedding, t.best_crop = 0.0, None, b""
             if gone:
                 del self.tracks[tid]
         return out
+
+
+def _snapshot(t: Track) -> Track:
+    """Copy of what is sent, so resetting the track for the next period does not touch it."""
+    return Track(t.id, t.bbox, t.first_seen, t.last_seen, t.best_quality, t.best_embedding, t.best_crop,
+                 t.best_det_score, t.best_face_px, True, t.last_sent, t.hits)

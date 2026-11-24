@@ -38,6 +38,7 @@ cp edge/config.example.json edge/config.json   # then edit it
 | `fps` | Frames analysed per second per camera (5 is enough for people walking) |
 | `min_face_px` | Ignore faces narrower than this (too small to match reliably) |
 | `send_after_s` | Someone staying in view is sent after this many seconds |
+| `recheck_every_s` | Someone who stays in view is checked again this often, with their best face of that period (default 10; `0` = only once per pass) |
 | `cameras[].source` | `rtsp://user:pass@ip:554/...` for IP cameras, `http://.../video` for a phone IP-camera app, `"0"` for a USB/laptop webcam |
 | `cameras[].key` | Key from `/admin` → Cameras |
 | `cameras[].rotate` | `90`, `180` or `270` (clockwise) if the picture arrives sideways or upside down, e.g. a phone held upright or a camera mounted on its side. Faces must be upright to be detected |

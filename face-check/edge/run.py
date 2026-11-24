@@ -142,7 +142,7 @@ class CameraWorker(threading.Thread):
                        270: cv2.ROTATE_90_COUNTERCLOCKWISE}[int(cfg.get("rotate", 0)) % 360]
         self.engine, self.sender, self.opts, self.stop = engine, sender, opts, stop
         self.reader = LatestFrame(self.source, self.name_, stop)
-        self.tracker = Tracker(send_after_s=opts.send_after)
+        self.tracker = Tracker(send_after_s=opts.send_after, recheck_every_s=opts.recheck_every)
         self.active = True
         self.preview: np.ndarray | None = None
         self.last_faces: list[tuple[np.ndarray, bool]] = []   # for the live view overlay
@@ -340,6 +340,7 @@ def main():
         min_face_px=float(cfg.get("min_face_px", 80)),
         min_det_score=float(cfg.get("min_det_score", 0.6)),
         send_after=float(cfg.get("send_after_s", 3)),
+        recheck_every=float(cfg.get("recheck_every_s", 10)),
         preview=args.preview,
     )
     server = Server(cfg["server"])
