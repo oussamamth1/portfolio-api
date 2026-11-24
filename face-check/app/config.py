@@ -38,3 +38,6 @@ ALERT_DEDUPE_MIN = int(os.environ.get("ALERT_DEDUPE_MIN", "10"))
 CAMERA_MATCH_THRESHOLD = float(os.environ.get("CAMERA_MATCH_THRESHOLD", "0.55"))
 # A camera is shown as offline when its edge box has not called in for this long.
 CAMERA_OFFLINE_AFTER_S = int(os.environ.get("CAMERA_OFFLINE_AFTER_S", "180"))
+# Same person on the same camera: grouped into one review while they keep being seen, and
+# for this many minutes after the review is confirmed/rejected; after that a new review opens.
+CAMERA_GROUP_MIN = int(os.environ.get("CAMERA_GROUP_MIN", "10"))

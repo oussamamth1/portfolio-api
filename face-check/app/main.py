@@ -950,7 +950,7 @@ def edge_detection(request: Request, body: DetectionBody, cam: CameraAuth = Depe
     """One person seen by a camera (best frame of their track), as a face embedding.
 
     Only wanted people are compared. Nothing is stored unless the face matches; a match
-    goes to the review queue (grouped per camera + person for ALERT_DEDUPE_MIN minutes).
+    goes to the review queue (repeat sightings grouped, see CAMERA_GROUP_MIN).
     need_photo tells the edge box to upload its face crop for the reviewer.
     """
     if not cam.active:
@@ -971,11 +971,15 @@ def edge_detection(request: Request, body: DetectionBody, cam: CameraAuth = Depe
         if not top or float(top[1]) < threshold:
             return {"match": False}
         suspect_id, sim = top[0], round(float(top[1]), 3)
+        # Group repeat sightings: into a pending review while the person keeps being seen,
+        # and into a decided review for CAMERA_GROUP_MIN after the operator's decision.
         recent = conn.execute(
             "SELECT id, similarity, status, photo IS NOT NULL FROM camera_matches "
-            "WHERE camera_id = %s AND suspect_id = %s "
-            "AND last_seen_at > now() - make_interval(mins => %s::int) ORDER BY id DESC LIMIT 1",
-            (cam.id, suspect_id, config.ALERT_DEDUPE_MIN)).fetchone()
+            "WHERE camera_id = %(cam)s AND suspect_id = %(sus)s AND CASE WHEN status = 'pending' "
+            "THEN last_seen_at > now() - make_interval(mins => %(win)s::int) "
+            "ELSE reviewed_at > now() - make_interval(mins => %(win)s::int) END "
+            "ORDER BY id DESC LIMIT 1",
+            {"cam": cam.id, "sus": suspect_id, "win": config.CAMERA_GROUP_MIN}).fetchone()
         if recent:
             better = sim > recent[1]
             conn.execute(

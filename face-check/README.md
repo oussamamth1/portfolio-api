@@ -85,7 +85,9 @@ private key). Without it alerts still work, but officers only see them when they
 
 An edge box at each site runs `edge/` (see `edge/README.md` and `cameraplan.md`). It sends
 face embeddings only; the server compares them with **wanted** people only, using
-`CAMERA_MATCH_THRESHOLD` (default 0.55, per-camera override on `/admin`). Matches go to the
+`CAMERA_MATCH_THRESHOLD` (default 0.55, per-camera override on `/admin`). Repeat sightings of the
+same person on the same camera join one review while they keep being seen, and for
+`CAMERA_GROUP_MIN` minutes (default 10) after it is confirmed or rejected. Matches go to the
 review queue on `/admin` and alert officers only after an operator confirms.
 
 ## Before real use
