@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from . import config
+from . import auth, config
 from .db import audit, init_db
 from .faces import FaceEngine
 
@@ -14,6 +14,7 @@ STATIC = Path(__file__).parent / "static"
 
 # Case status values; the admin page and the officer app show these labels.
 STATUSES = ("open", "investigating", "arrested", "released", "closed")
+login_limiter = auth.LoginLimiter()
 
 
 @asynccontextmanager
@@ -39,20 +40,27 @@ def require_admin(x_api_key: str | None = Header(None)) -> str:
     return "admin"
 
 
-def require_officer(x_api_key: str | None = Header(None),
-                    x_officer_id: str | None = Header(None)) -> str:
-    if not _key_ok(x_api_key, config.OFFICER_API_KEY):
-        raise HTTPException(401, "Invalid officer key")
-    if not x_officer_id or len(x_officer_id) > 64:
-        raise HTTPException(400, "X-Officer-Id header is required")
-    return f"officer:{x_officer_id}"
+def require_officer(request: Request, authorization: str | None = Header(None)) -> str:
+    """Officer signed in through the app: `Authorization: Bearer <token>`."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Please sign in")
+    with request.app.state.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT o.badge FROM officer_sessions s JOIN officers o ON o.id = s.officer_id "
+            "WHERE s.token_hash = %s AND s.expires_at > now() AND o.active",
+            (auth.token_hash(authorization[7:].strip()),),
+        ).fetchone()
+    if not row:
+        raise HTTPException(401, "Session expired or account disabled - please sign in again")
+    return f"officer:{row[0]}"
 
 
-def require_any(x_api_key: str | None = Header(None),
-                x_officer_id: str | None = Header(None)) -> str:
+def require_any(request: Request, x_api_key: str | None = Header(None),
+                authorization: str | None = Header(None)) -> str:
+    """Admin key or a signed-in officer (the admin page tests identify with its own key)."""
     if _key_ok(x_api_key, config.ADMIN_API_KEY):
         return "admin"
-    return require_officer(x_api_key, x_officer_id)
+    return require_officer(request, authorization)
 
 
 async def _read_image(upload: UploadFile) -> bytes:
@@ -207,7 +215,7 @@ def delete_suspect(request: Request, suspect_id: int, actor: str = Depends(requi
 
 @app.post("/api/identify")
 async def identify(request: Request, photo: UploadFile = File(...),
-                   actor: str = Depends(require_officer)):
+                   actor: str = Depends(require_any)):
     """Compare the largest face in the photo with all suspects.
 
     The photo is processed in memory only and never stored.
@@ -247,6 +255,153 @@ async def identify(request: Request, photo: UploadFile = File(...),
           top["id"] if top else None, top["similarity"] if top else None)
     return {"face_detected": True, "face_count": len(faces), "matches": matches,
             "threshold": config.MATCH_THRESHOLD}
+
+
+# ---------- officer sign-in (mobile app) ----------
+
+class LoginBody(BaseModel):
+    badge: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/api/officer/login")
+def officer_login(request: Request, body: LoginBody):
+    badge = body.badge.strip()
+    pool = request.app.state.pool
+    wait = login_limiter.locked_for(badge)
+    if wait:
+        raise HTTPException(429, f"Too many wrong passwords - try again in {wait // 60 + 1} min")
+    with pool.connection() as conn:
+        row = conn.execute("SELECT id, full_name, password_hash, active FROM officers WHERE badge = %s",
+                           (badge,)).fetchone()
+    if not auth.verify_password(body.password, row[2] if row else None):
+        login_limiter.fail(badge)
+        audit(pool, f"officer:{badge}", "login", "wrong_password")
+        raise HTTPException(401, "Wrong badge number or password")
+    if not row[3]:
+        audit(pool, f"officer:{badge}", "login", "disabled")
+        raise HTTPException(403, "This account is disabled - contact your administrator")
+    login_limiter.reset(badge)
+    token, token_hash = auth.new_token()
+    with pool.connection() as conn:
+        expires = conn.execute(
+            "INSERT INTO officer_sessions (token_hash, officer_id, expires_at) "
+            f"VALUES (%s, %s, now() + interval '{auth.SESSION_DAYS} days') RETURNING expires_at",
+            (token_hash, row[0]),
+        ).fetchone()[0]
+        conn.execute("UPDATE officers SET last_login_at = now() WHERE id = %s", (row[0],))
+        conn.execute("DELETE FROM officer_sessions WHERE expires_at < now()")
+    audit(pool, f"officer:{badge}", "login", "ok")
+    return {"token": token, "badge": badge, "full_name": row[1], "expires_at": expires.isoformat()}
+
+
+@app.get("/api/officer/me")
+def officer_me(request: Request, actor: str = Depends(require_officer)):
+    badge = actor.split(":", 1)[1]
+    with request.app.state.pool.connection() as conn:
+        row = conn.execute("SELECT full_name FROM officers WHERE badge = %s", (badge,)).fetchone()
+    return {"badge": badge, "full_name": row[0] if row else ""}
+
+
+@app.post("/api/officer/logout")
+def officer_logout(request: Request, authorization: str | None = Header(None),
+                   actor: str = Depends(require_officer)):
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        conn.execute("DELETE FROM officer_sessions WHERE token_hash = %s",
+                     (auth.token_hash(authorization[7:].strip()),))
+    audit(pool, actor, "logout", "ok")
+    return {"ok": True}
+
+
+# ---------- officer accounts (admin) ----------
+
+class OfficerCreate(BaseModel):
+    badge: str = Field(..., min_length=1, max_length=64)
+    full_name: str = Field(..., min_length=2, max_length=200)
+    password: str = Field(..., min_length=auth.MIN_PASSWORD_LEN, max_length=200)
+
+
+class OfficerUpdate(BaseModel):
+    full_name: str | None = Field(None, min_length=2, max_length=200)
+    password: str | None = Field(None, min_length=auth.MIN_PASSWORD_LEN, max_length=200)
+    active: bool | None = None
+
+
+def _officer_json(r) -> dict:
+    return {"id": r[0], "badge": r[1], "full_name": r[2], "active": r[3],
+            "created_at": r[4].isoformat(), "last_login_at": r[5].isoformat() if r[5] else None,
+            "sessions": r[6]}
+
+
+_OFFICER_COLS = ("SELECT o.id, o.badge, o.full_name, o.active, o.created_at, o.last_login_at, "
+                 "(SELECT count(*) FROM officer_sessions s WHERE s.officer_id = o.id "
+                 "AND s.expires_at > now()) FROM officers o")
+
+
+@app.get("/api/officers")
+def list_officers(request: Request, _: str = Depends(require_admin)):
+    with request.app.state.pool.connection() as conn:
+        rows = conn.execute(_OFFICER_COLS + " ORDER BY o.badge").fetchall()
+    return [_officer_json(r) for r in rows]
+
+
+@app.post("/api/officers")
+def create_officer(request: Request, body: OfficerCreate, actor: str = Depends(require_admin)):
+    pool = request.app.state.pool
+    badge = body.badge.strip()
+    with pool.connection() as conn:
+        if conn.execute("SELECT 1 FROM officers WHERE badge = %s", (badge,)).fetchone():
+            raise HTTPException(409, f"Badge {badge} already has an account")
+        oid = conn.execute(
+            "INSERT INTO officers (badge, full_name, password_hash) VALUES (%s, %s, %s) RETURNING id",
+            (badge, body.full_name.strip(), auth.hash_password(body.password)),
+        ).fetchone()[0]
+        row = conn.execute(_OFFICER_COLS + " WHERE o.id = %s", (oid,)).fetchone()
+    audit(pool, actor, "create_officer", badge)
+    return _officer_json(row)
+
+
+@app.patch("/api/officers/{officer_id}")
+def update_officer(request: Request, officer_id: int, body: OfficerUpdate,
+                   actor: str = Depends(require_admin)):
+    changes = body.model_dump(exclude_unset=True)
+    if any(v is None for v in changes.values()):
+        raise HTTPException(400, "Fields cannot be empty")
+    if not changes:
+        raise HTTPException(400, "Nothing to update")
+    sets, params = [], []
+    if "full_name" in changes:
+        sets.append("full_name = %s"); params.append(changes["full_name"].strip())
+    if "password" in changes:
+        sets.append("password_hash = %s"); params.append(auth.hash_password(changes["password"]))
+    if "active" in changes:
+        sets.append("active = %s"); params.append(changes["active"])
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        found = conn.execute(f"UPDATE officers SET {', '.join(sets)} WHERE id = %s RETURNING badge",
+                             (*params, officer_id)).fetchone()
+        if not found:
+            raise HTTPException(404, "Not found")
+        # A new password or a disabled account signs the officer out on every phone.
+        if "password" in changes or changes.get("active") is False:
+            conn.execute("DELETE FROM officer_sessions WHERE officer_id = %s", (officer_id,))
+        row = conn.execute(_OFFICER_COLS + " WHERE o.id = %s", (officer_id,)).fetchone()
+    what = ", ".join("password reset" if k == "password" else f"{k}={v}" for k, v in changes.items())
+    audit(pool, actor, "update_officer", f"{found[0]}: {what}")
+    return _officer_json(row)
+
+
+@app.post("/api/officers/{officer_id}/signout")
+def sign_out_officer(request: Request, officer_id: int, actor: str = Depends(require_admin)):
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        row = conn.execute("SELECT badge FROM officers WHERE id = %s", (officer_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Not found")
+        conn.execute("DELETE FROM officer_sessions WHERE officer_id = %s", (officer_id,))
+    audit(pool, actor, "signout_officer", row[0])
+    return {"ok": True}
 
 
 @app.get("/api/audit")

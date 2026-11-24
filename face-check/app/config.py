@@ -10,7 +10,6 @@ def _required(name: str) -> str:
 
 DATABASE_URL = _required("DATABASE_URL")
 ADMIN_API_KEY = _required("ADMIN_API_KEY")
-OFFICER_API_KEY = _required("OFFICER_API_KEY")
 
 # Cosine similarity (0..1) above which a suspect is shown as a *possible* match.
 # ArcFace: same person is usually > 0.5, different people usually < 0.3.

@@ -19,6 +19,24 @@ ALTER TABLE suspects ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DE
 CREATE INDEX IF NOT EXISTS suspects_embedding_idx
     ON suspects USING hnsw (embedding vector_cosine_ops);
 
+CREATE TABLE IF NOT EXISTS officers (
+    id            SERIAL PRIMARY KEY,
+    badge         TEXT NOT NULL UNIQUE,
+    full_name     TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    active        BOOLEAN NOT NULL DEFAULT true,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS officer_sessions (
+    token_hash  TEXT PRIMARY KEY,
+    officer_id  INT NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS officer_sessions_officer_idx ON officer_sessions (officer_id);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id             BIGSERIAL PRIMARY KEY,
     actor          TEXT NOT NULL,

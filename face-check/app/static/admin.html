@@ -71,12 +71,24 @@
   </section>
 
   <section>
+    <h2>Officers</h2>
+    <p class="muted">Each officer signs in to the mobile app with their badge number and password.
+      Disabling an account or resetting its password signs that officer out on every phone.</p>
+    <form id="officerForm">
+      <div class="row">
+        <div><label>Badge number</label><input name="badge" required maxlength="64"></div>
+        <div><label>Full name</label><input name="full_name" required minlength="2"></div>
+        <div><label>Password (min 8 characters)</label><input name="password" type="text" required minlength="8" autocomplete="off"></div>
+      </div>
+      <button type="submit">Create officer account</button>
+      <div id="omsg"></div>
+    </form>
+    <div class="tablewrap" style="margin-top:12px"><table id="officers"></table></div>
+  </section>
+
+  <section>
     <h2>Test identification</h2>
-    <p class="muted">Uses the officer key, as the mobile app will.</p>
-    <div class="row">
-      <div><input id="okey" type="password" placeholder="OFFICER_API_KEY"></div>
-      <div><input id="oid" placeholder="Officer ID" value="admin-test"></div>
-    </div>
+    <p class="muted">Runs the same check as the officer app, logged as "admin".</p>
     <label>Photo</label><input id="testPhoto" type="file" accept="image/*">
     <button onclick="testIdentify()">Identify</button>
     <div id="testResult"></div>
@@ -194,8 +206,7 @@ async function testIdentify() {
   const fd = new FormData(); fd.append('photo', f);
   $('testResult').textContent = 'Checking...';
   try {
-    const r = await (await api('/api/identify', { method: 'POST', body: fd }, $('okey').value.trim(),
-      { 'X-Officer-Id': $('oid').value.trim() })).json();
+    const r = await (await api('/api/identify', { method: 'POST', body: fd })).json();
     if (!r.face_detected) { $('testResult').innerHTML = '<p>No face detected.</p>'; return; }
     if (!r.matches.length) { $('testResult').innerHTML = `<p class="ok">No match (threshold ${r.threshold}).</p>`; }
     else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
@@ -204,7 +215,57 @@ async function testIdentify() {
   } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
-function refresh() { loadList(); loadAudit(); }
+const jsonHeaders = { 'Content-Type': 'application/json' };
+
+async function loadOfficers() {
+  if (!KEY) return;
+  try {
+    const rows = await (await api('/api/officers')).json();
+    $('officers').innerHTML = '<tr><th>Badge</th><th>Name</th><th>Account</th><th>Last sign-in</th><th>Phones signed in</th><th></th></tr>' +
+      (rows.map(o => `<tr>
+        <td>${esc(o.badge)}</td><td>${esc(o.full_name)}</td>
+        <td>${o.active ? '<span class="ok">Active</span>' : '<span class="err">Disabled</span>'}</td>
+        <td>${o.last_login_at ? new Date(o.last_login_at).toLocaleString() : 'Never'}</td>
+        <td>${o.sessions}</td>
+        <td style="white-space:nowrap">
+          <button class="danger" onclick="setActive(${o.id}, ${!o.active})">${o.active ? 'Disable' : 'Enable'}</button>
+          <button class="danger" onclick="resetPw(${o.id}, '${esc(o.badge)}')">Reset password</button>
+          <button class="danger" onclick="signOut(${o.id})">Sign out phones</button>
+        </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No officer accounts yet.</td></tr>');
+  } catch (e) { $('officers').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+}
+
+async function officerAction(fn) {
+  try { await fn(); $('omsg').textContent = ''; refresh(); }
+  catch (e) { $('omsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+function setActive(id, active) {
+  officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) }, KEY, jsonHeaders));
+}
+
+function resetPw(id, badge) {
+  const password = window.prompt(`New password for badge ${badge} (min 8 characters):`);
+  if (!password) return;
+  officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ password }) }, KEY, jsonHeaders));
+}
+
+function signOut(id) {
+  officerAction(() => api(`/api/officers/${id}/signout`, { method: 'POST' }));
+}
+
+$('officerForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = JSON.stringify(Object.fromEntries(new FormData(ev.target)));
+  try {
+    const o = await (await api('/api/officers', { method: 'POST', body }, KEY, jsonHeaders)).json();
+    $('omsg').innerHTML = `<span class="ok">Account created for badge ${esc(o.badge)}. Give the officer their badge number and password.</span>`;
+    ev.target.reset();
+    refresh();
+  } catch (e) { $('omsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+});
+
+function refresh() { loadList(); loadOfficers(); loadAudit(); }
 refresh();
 </script>
 </body>
