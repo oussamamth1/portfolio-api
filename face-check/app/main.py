@@ -5,6 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import numpy as np
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -571,6 +572,67 @@ def _send_alert_pushes(pool, alert_id: int, tokens: list[str], title: str, body:
             )
 
 
+def _make_alert(conn, *, suspect_id: int, person, lat: float, lng: float, accuracy: float | None,
+                similarity: float | None, photo: bytes, mime: str, officer_id: int | None,
+                badge: str, camera_id: int | None = None, camera_name: str | None = None):
+    """Store an alert and pick the on-duty officers within the radius (not the reporter).
+    Returns (alert_id, radius_km, nearby officer count, push tokens)."""
+    radius = _radius_km(conn)
+    alert_id = conn.execute(
+        "INSERT INTO alerts (suspect_id, full_name, case_number, most_wanted, officer_id, "
+        "officer_badge, lat, lng, accuracy_m, similarity, photo, photo_mime, radius_km, camera_id, camera_name) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (suspect_id, person[0], person[1], person[3], officer_id, badge, lat, lng,
+         accuracy, similarity, photo, mime, radius, camera_id, camera_name),
+    ).fetchone()[0]
+
+    rows = conn.execute(
+        f"SELECT s.officer_id, s.push_token, {_KM_SQL.format(t='s')} AS km "
+        "FROM officer_sessions s JOIN officers o ON o.id = s.officer_id "
+        "WHERE o.active AND s.expires_at > now() AND s.lat IS NOT NULL "
+        "AND s.location_at > now() - make_interval(mins => %(age)s::int) "
+        "AND s.officer_id IS DISTINCT FROM %(me)s",
+        {"lat": lat, "lng": lng, "age": config.LOCATION_MAX_AGE_MIN, "me": officer_id},
+    ).fetchall()
+    nearest: dict[int, float] = {}
+    tokens: list[str] = []
+    for oid, token, km in rows:
+        if km is None or km > radius:
+            continue
+        nearest[oid] = min(km, nearest.get(oid, km))
+        if token:
+            tokens.append(token)
+    for oid, km in nearest.items():
+        conn.execute("INSERT INTO alert_recipients (alert_id, officer_id, distance_km) "
+                     "VALUES (%s, %s, %s)", (alert_id, oid, km))
+    conn.execute("DELETE FROM alerts WHERE created_at < now() - make_interval(days => %s::int)",
+                 (config.ALERT_RETENTION_DAYS,))
+    return alert_id, radius, len(nearest), tokens
+
+
+def _queue_alert_push(request: Request, background: BackgroundTasks, alert_id: int, tokens: list[str],
+                      person, reporter: str):
+    if not tokens:
+        return
+    expires = int(time.time()) + 3600
+    image_url = (f"{_public_base(request)}/api/alerts/{alert_id}/photo"
+                 f"?e={expires}&sig={_photo_sig(alert_id, expires)}")
+    title = ("MOST WANTED" if person[3] else "WANTED") + f" person spotted nearby: {person[0]}"
+    body = f"Case {person[1]} - {reporter}. Tap to see the photo and location."
+    background.add_task(_send_alert_pushes, request.app.state.pool, alert_id, tokens, title, body, image_url)
+
+
+def _wanted_person(conn, suspect_id: int):
+    person = conn.execute(
+        "SELECT full_name, case_number, wanted, most_wanted FROM suspects WHERE id = %s",
+        (suspect_id,)).fetchone()
+    if not person:
+        raise HTTPException(404, "Person not found")
+    if not person[2]:
+        raise HTTPException(400, "This person is not on the wanted list")
+    return person
+
+
 @app.post("/api/alerts")
 async def create_alert(
     request: Request,
@@ -588,14 +650,7 @@ async def create_alert(
     data = await _read_image(photo)
     pool = request.app.state.pool
     with pool.connection() as conn:
-        person = conn.execute(
-            "SELECT full_name, case_number, wanted, most_wanted FROM suspects WHERE id = %s",
-            (suspect_id,)).fetchone()
-        if not person:
-            raise HTTPException(404, "Person not found")
-        if not person[2]:
-            raise HTTPException(400, "This person is not on the wanted list")
-
+        person = _wanted_person(conn, suspect_id)
         recent = conn.execute(
             "SELECT id FROM alerts WHERE suspect_id = %s AND officer_id = %s "
             "AND created_at > now() - make_interval(mins => %s::int) ORDER BY id DESC LIMIT 1",
@@ -605,56 +660,22 @@ async def create_alert(
                              (recent[0],)).fetchone()[0]
             return {"id": recent[0], "duplicate": True, "recipients": n,
                     "push_enabled": push.enabled()}
+        alert_id, radius, n, tokens = _make_alert(
+            conn, suspect_id=suspect_id, person=person, lat=lat, lng=lng, accuracy=accuracy,
+            similarity=similarity, photo=data, mime=photo.content_type or "image/jpeg",
+            officer_id=me.officer_id, badge=me.badge)
 
-        radius = _radius_km(conn)
-        alert_id = conn.execute(
-            "INSERT INTO alerts (suspect_id, full_name, case_number, most_wanted, officer_id, "
-            "officer_badge, lat, lng, accuracy_m, similarity, photo, photo_mime, radius_km) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (suspect_id, person[0], person[1], person[3], me.officer_id, me.badge, lat, lng,
-             accuracy, similarity, data, photo.content_type or "image/jpeg", radius),
-        ).fetchone()[0]
-
-        rows = conn.execute(
-            f"SELECT s.officer_id, s.push_token, {_KM_SQL.format(t='s')} AS km "
-            "FROM officer_sessions s JOIN officers o ON o.id = s.officer_id "
-            "WHERE o.active AND s.expires_at > now() AND s.lat IS NOT NULL "
-            "AND s.location_at > now() - make_interval(mins => %(age)s::int) AND s.officer_id <> %(me)s",
-            {"lat": lat, "lng": lng, "age": config.LOCATION_MAX_AGE_MIN, "me": me.officer_id},
-        ).fetchall()
-        nearest: dict[int, float] = {}
-        tokens: list[str] = []
-        for officer_id, token, km in rows:
-            if km is None or km > radius:
-                continue
-            nearest[officer_id] = min(km, nearest.get(officer_id, km))
-            if token:
-                tokens.append(token)
-        for officer_id, km in nearest.items():
-            conn.execute("INSERT INTO alert_recipients (alert_id, officer_id, distance_km) "
-                         "VALUES (%s, %s, %s)", (alert_id, officer_id, km))
-        conn.execute("DELETE FROM alerts WHERE created_at < now() - make_interval(days => %s::int)",
-                     (config.ALERT_RETENTION_DAYS,))
-
-    audit(pool, me.actor, "alert", f"alert #{alert_id}: {len(nearest)} officers within {radius:g} km",
+    audit(pool, me.actor, "alert", f"alert #{alert_id}: {n} officers within {radius:g} km",
           suspect_id, similarity)
-
-    if tokens:
-        expires = int(time.time()) + 3600
-        image_url = (f"{_public_base(request)}/api/alerts/{alert_id}/photo"
-                     f"?e={expires}&sig={_photo_sig(alert_id, expires)}")
-        title = ("MOST WANTED" if person[3] else "WANTED") + f" person spotted nearby: {person[0]}"
-        body = f"Case {person[1]} - reported by officer {me.badge}. Tap to see the photo and location."
-        background.add_task(_send_alert_pushes, pool, alert_id, tokens, title, body, image_url)
-
-    return {"id": alert_id, "duplicate": False, "recipients": len(nearest), "radius_km": radius,
+    _queue_alert_push(request, background, alert_id, tokens, person, f"reported by officer {me.badge}")
+    return {"id": alert_id, "duplicate": False, "recipients": n, "radius_km": radius,
             "push_enabled": push.enabled()}
 
 
 _ALERT_COLS = ("a.id, a.suspect_id, a.full_name, a.case_number, a.most_wanted, a.officer_badge, "
                "a.lat, a.lng, a.accuracy_m, a.similarity, a.created_at, a.radius_km, "
                "sp.status, sp.wanted, "
-               "(SELECT count(*) FROM alert_recipients r2 WHERE r2.alert_id = a.id)")
+               "(SELECT count(*) FROM alert_recipients r2 WHERE r2.alert_id = a.id), a.camera_name")
 
 
 def _alert_json(r, distance_km=None, mine=False) -> dict:
@@ -666,6 +687,7 @@ def _alert_json(r, distance_km=None, mine=False) -> dict:
         "recipients": r[14], "distance_km": distance_km, "sent_by_me": mine,
         "photo_url": f"/api/alerts/{r[0]}/photo",
         "reference_photo_url": f"/api/suspects/{r[1]}/photo" if r[1] else None,
+        "camera_name": r[15],
     }
 
 
@@ -689,7 +711,7 @@ def list_alerts(request: Request, days: int = 7, x_api_key: str | None = Header(
             "WHERE (r.officer_id IS NOT NULL OR a.officer_id = %(me)s) "
             "AND a.created_at > now() - make_interval(days => %(days)s::int) ORDER BY a.id DESC LIMIT 200",
             {"me": me.officer_id, "days": days}).fetchall()
-    return [_alert_json(r, r[15], r[16]) for r in rows]
+    return [_alert_json(r, r[16], r[17]) for r in rows]
 
 
 def _officer_can_see(conn, alert_id: int, officer_id: int) -> bool:
@@ -767,6 +789,312 @@ def put_alert_settings(request: Request, body: AlertSettings, actor: str = Depen
                      "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (str(body.radius_km),))
     audit(pool, actor, "settings", f"alert radius = {body.radius_km:g} km")
     return get_alert_settings(request, actor)
+
+
+# ---------- street cameras: registry (admin) ----------
+
+CAMERA_COLS = ("c.id, c.name, c.area, c.lat, c.lng, c.active, c.threshold, c.created_at, c.last_seen_at, "
+               "c.last_model, (SELECT count(*) FROM camera_matches m WHERE m.camera_id = c.id "
+               "AND m.status = 'pending')")
+
+
+def _camera_json(r) -> dict:
+    online = r[8] is not None and (time.time() - r[8].timestamp()) < config.CAMERA_OFFLINE_AFTER_S
+    return {"id": r[0], "name": r[1], "area": r[2], "lat": r[3], "lng": r[4], "active": r[5],
+            "threshold": r[6], "effective_threshold": r[6] or config.CAMERA_MATCH_THRESHOLD,
+            "created_at": r[7].isoformat(), "last_seen_at": r[8].isoformat() if r[8] else None,
+            "online": online, "model": r[9], "pending_matches": r[10]}
+
+
+class CameraCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200)
+    area: str | None = Field(None, max_length=200)
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
+    threshold: float | None = Field(None, gt=0, lt=1)
+
+
+class CameraUpdate(BaseModel):
+    name: str | None = Field(None, min_length=2, max_length=200)
+    area: str | None = Field(None, max_length=200)
+    lat: float | None = Field(None, ge=-90, le=90)
+    lng: float | None = Field(None, ge=-180, le=180)
+    active: bool | None = None
+    threshold: float | None = Field(None, gt=0, lt=1)   # null resets to the default
+
+
+def _new_camera_key() -> tuple[str, str]:
+    key = "cam_" + secrets.token_urlsafe(32)
+    return key, auth.token_hash(key)
+
+
+@app.get("/api/cameras")
+def list_cameras(request: Request, _: str = Depends(require_admin)):
+    with request.app.state.pool.connection() as conn:
+        rows = conn.execute(f"SELECT {CAMERA_COLS} FROM cameras c ORDER BY c.name").fetchall()
+    return {"default_threshold": config.CAMERA_MATCH_THRESHOLD, "model": config.MODEL_NAME,
+            "items": [_camera_json(r) for r in rows]}
+
+
+@app.post("/api/cameras")
+def create_camera(request: Request, body: CameraCreate, actor: str = Depends(require_admin)):
+    """Register a camera. The API key is returned only here: put it in the edge box config."""
+    key, key_hash = _new_camera_key()
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        cid = conn.execute(
+            "INSERT INTO cameras (name, area, lat, lng, threshold, key_hash) VALUES (%s, %s, %s, %s, %s, %s) "
+            "RETURNING id", (body.name.strip(), body.area, body.lat, body.lng, body.threshold, key_hash),
+        ).fetchone()[0]
+        row = conn.execute(f"SELECT {CAMERA_COLS} FROM cameras c WHERE c.id = %s", (cid,)).fetchone()
+    audit(pool, actor, "create_camera", body.name)
+    return {**_camera_json(row), "api_key": key}
+
+
+@app.patch("/api/cameras/{camera_id}")
+def update_camera(request: Request, camera_id: int, body: CameraUpdate, actor: str = Depends(require_admin)):
+    changes = body.model_dump(exclude_unset=True)
+    for k in ("name", "lat", "lng", "active"):
+        if k in changes and changes[k] is None:
+            raise HTTPException(400, f"{k} cannot be empty")
+    if not changes:
+        raise HTTPException(400, "Nothing to update")
+    cols = ", ".join(f"{k} = %s" for k in changes)  # keys come from the model, not the client
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        found = conn.execute(f"UPDATE cameras SET {cols} WHERE id = %s RETURNING name",
+                             (*changes.values(), camera_id)).fetchone()
+        if not found:
+            raise HTTPException(404, "Not found")
+        row = conn.execute(f"SELECT {CAMERA_COLS} FROM cameras c WHERE c.id = %s", (camera_id,)).fetchone()
+    audit(pool, actor, "update_camera", f"{found[0]}: " + ", ".join(f"{k}={v}" for k, v in changes.items()))
+    return _camera_json(row)
+
+
+@app.post("/api/cameras/{camera_id}/key")
+def rotate_camera_key(request: Request, camera_id: int, actor: str = Depends(require_admin)):
+    """New API key for a camera; the old one stops working immediately."""
+    key, key_hash = _new_camera_key()
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        found = conn.execute("UPDATE cameras SET key_hash = %s WHERE id = %s RETURNING name",
+                             (key_hash, camera_id)).fetchone()
+    if not found:
+        raise HTTPException(404, "Not found")
+    audit(pool, actor, "rotate_camera_key", found[0])
+    return {"id": camera_id, "api_key": key}
+
+
+@app.delete("/api/cameras/{camera_id}")
+def delete_camera(request: Request, camera_id: int, actor: str = Depends(require_admin)):
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        found = conn.execute("DELETE FROM cameras WHERE id = %s RETURNING name", (camera_id,)).fetchone()
+    if not found:
+        raise HTTPException(404, "Not found")
+    audit(pool, actor, "delete_camera", found[0])
+    return {"deleted": camera_id}
+
+
+# ---------- street cameras: edge box API (X-Camera-Key) ----------
+
+class CameraAuth:
+    def __init__(self, row):
+        self.id, self.name, self.active, self.threshold, self.lat, self.lng = row
+
+    @property
+    def actor(self) -> str:
+        return f"camera:{self.name}"
+
+
+def camera_auth(request: Request, x_camera_key: str | None = Header(None)) -> CameraAuth:
+    if not x_camera_key:
+        raise HTTPException(401, "X-Camera-Key header is required")
+    with request.app.state.pool.connection() as conn:
+        row = conn.execute(
+            "UPDATE cameras SET last_seen_at = now() WHERE key_hash = %s "
+            "RETURNING id, name, active, threshold, lat, lng", (auth.token_hash(x_camera_key),)).fetchone()
+    if not row:
+        raise HTTPException(401, "Invalid camera key")
+    return CameraAuth(row)
+
+
+@app.get("/api/edge/config")
+def edge_config(cam: CameraAuth = Depends(camera_auth)):
+    """What the edge box needs: which face model to run (must match the server's) and the threshold."""
+    return {"camera_id": cam.id, "name": cam.name, "active": cam.active, "model": config.MODEL_NAME,
+            "threshold": cam.threshold or config.CAMERA_MATCH_THRESHOLD}
+
+
+class HeartbeatBody(BaseModel):
+    model: str | None = Field(None, max_length=50)
+
+
+@app.post("/api/edge/heartbeat")
+def edge_heartbeat(request: Request, body: HeartbeatBody, cam: CameraAuth = Depends(camera_auth)):
+    if body.model:
+        with request.app.state.pool.connection() as conn:
+            conn.execute("UPDATE cameras SET last_model = %s WHERE id = %s", (body.model, cam.id))
+    return {"ok": True, "active": cam.active}
+
+
+class DetectionBody(BaseModel):
+    embedding: list[float] = Field(..., min_length=512, max_length=512)
+    model: str = Field(..., max_length=50)
+    det_score: float | None = Field(None, ge=0, le=1)
+    face_px: float | None = Field(None, ge=0)
+
+
+@app.post("/api/edge/detections")
+def edge_detection(request: Request, body: DetectionBody, cam: CameraAuth = Depends(camera_auth)):
+    """One person seen by a camera (best frame of their track), as a face embedding.
+
+    Only wanted people are compared. Nothing is stored unless the face matches; a match
+    goes to the review queue (grouped per camera + person for ALERT_DEDUPE_MIN minutes).
+    need_photo tells the edge box to upload its face crop for the reviewer.
+    """
+    if not cam.active:
+        raise HTTPException(403, "Camera is disabled")
+    if body.model != config.MODEL_NAME:
+        raise HTTPException(409, f"Model mismatch: server uses {config.MODEL_NAME}, edge sent {body.model}")
+    emb = np.asarray(body.embedding, dtype=np.float32)
+    norm = float(np.linalg.norm(emb))
+    if not np.isfinite(norm) or norm == 0:
+        raise HTTPException(400, "Invalid embedding")
+    emb /= norm
+    threshold = cam.threshold or config.CAMERA_MATCH_THRESHOLD
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        top = conn.execute(
+            "SELECT id, 1 - (embedding <=> %s) AS sim FROM suspects WHERE wanted "
+            "ORDER BY embedding <=> %s LIMIT 1", (emb, emb)).fetchone()
+        if not top or float(top[1]) < threshold:
+            return {"match": False}
+        suspect_id, sim = top[0], round(float(top[1]), 3)
+        recent = conn.execute(
+            "SELECT id, similarity, status, photo IS NOT NULL FROM camera_matches "
+            "WHERE camera_id = %s AND suspect_id = %s "
+            "AND last_seen_at > now() - make_interval(mins => %s::int) ORDER BY id DESC LIMIT 1",
+            (cam.id, suspect_id, config.ALERT_DEDUPE_MIN)).fetchone()
+        if recent:
+            better = sim > recent[1]
+            conn.execute(
+                "UPDATE camera_matches SET hits = hits + 1, last_seen_at = now(), "
+                "similarity = GREATEST(similarity, %s) WHERE id = %s", (sim, recent[0]))
+            pending = recent[2] == "pending"
+            return {"match": True, "match_id": recent[0], "new": False,
+                    "need_photo": pending and (better or not recent[3])}
+        match_id = conn.execute(
+            "INSERT INTO camera_matches (camera_id, suspect_id, similarity) VALUES (%s, %s, %s) RETURNING id",
+            (cam.id, suspect_id, sim)).fetchone()[0]
+        conn.execute("DELETE FROM camera_matches WHERE last_seen_at < now() - make_interval(days => %s::int)",
+                     (config.ALERT_RETENTION_DAYS,))
+    audit(pool, cam.actor, "camera_match", f"review #{match_id}", suspect_id, sim)
+    return {"match": True, "match_id": match_id, "new": True, "need_photo": True}
+
+
+@app.post("/api/edge/matches/{match_id}/photo")
+async def edge_match_photo(request: Request, match_id: int, photo: UploadFile = File(...),
+                           cam: CameraAuth = Depends(camera_auth)):
+    """Face crop for a pending match, so the reviewer can compare it with the photo on file."""
+    data = await _read_image(photo)
+    with request.app.state.pool.connection() as conn:
+        found = conn.execute(
+            "UPDATE camera_matches SET photo = %s, photo_mime = %s "
+            "WHERE id = %s AND camera_id = %s AND status = 'pending' RETURNING id",
+            (data, photo.content_type or "image/jpeg", match_id, cam.id)).fetchone()
+    if not found:
+        raise HTTPException(404, "No pending match with this id for this camera")
+    return {"ok": True}
+
+
+# ---------- street cameras: review queue (admin / control room) ----------
+
+MATCH_COLS = ("m.id, m.camera_id, c.name, c.area, c.lat, c.lng, m.suspect_id, s.full_name, s.case_number, "
+              "s.most_wanted, s.wanted, s.status, m.similarity, m.hits, m.photo IS NOT NULL, m.status, "
+              "m.reviewed_by, m.reviewed_at, m.alert_id, m.first_seen_at, m.last_seen_at")
+
+
+def _match_json(r) -> dict:
+    return {"id": r[0], "camera_id": r[1], "camera_name": r[2], "camera_area": r[3], "lat": r[4], "lng": r[5],
+            "suspect_id": r[6], "full_name": r[7], "case_number": r[8], "most_wanted": r[9], "wanted": r[10],
+            "case_status": r[11], "similarity": r[12], "hits": r[13], "has_photo": r[14], "status": r[15],
+            "reviewed_by": r[16], "reviewed_at": r[17].isoformat() if r[17] else None, "alert_id": r[18],
+            "first_seen_at": r[19].isoformat(), "last_seen_at": r[20].isoformat(),
+            "photo_url": f"/api/camera-matches/{r[0]}/photo" if r[14] else None,
+            "reference_photo_url": f"/api/suspects/{r[6]}/photo"}
+
+
+@app.get("/api/camera-matches")
+def list_camera_matches(request: Request, status: str = "pending", limit: int = 100,
+                        _: str = Depends(require_admin)):
+    if status not in ("pending", "confirmed", "rejected", "all"):
+        raise HTTPException(400, "status must be pending, confirmed, rejected or all")
+    limit = max(1, min(limit, 500))
+    where, params = ("", []) if status == "all" else (" WHERE m.status = %s", [status])
+    with request.app.state.pool.connection() as conn:
+        rows = conn.execute(
+            f"SELECT {MATCH_COLS} FROM camera_matches m JOIN cameras c ON c.id = m.camera_id "
+            f"JOIN suspects s ON s.id = m.suspect_id{where} ORDER BY m.last_seen_at DESC LIMIT %s",
+            (*params, limit)).fetchall()
+        pending = conn.execute("SELECT count(*) FROM camera_matches WHERE status = 'pending'").fetchone()[0]
+    return {"pending": pending, "items": [_match_json(r) for r in rows]}
+
+
+@app.get("/api/camera-matches/{match_id}/photo")
+def camera_match_photo(request: Request, match_id: int, _: str = Depends(require_admin)):
+    with request.app.state.pool.connection() as conn:
+        row = conn.execute("SELECT photo, photo_mime FROM camera_matches WHERE id = %s", (match_id,)).fetchone()
+    if not row or row[0] is None:
+        raise HTTPException(404, "No photo")
+    return Response(content=bytes(row[0]), media_type=row[1], headers={"Cache-Control": "private, no-store"})
+
+
+def _pending_match(conn, match_id: int):
+    row = conn.execute(
+        "SELECT m.status, m.suspect_id, m.camera_id, c.name, c.lat, c.lng, m.similarity, m.photo, m.photo_mime "
+        "FROM camera_matches m JOIN cameras c ON c.id = m.camera_id WHERE m.id = %s FOR UPDATE OF m",
+        (match_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    if row[0] != "pending":
+        raise HTTPException(409, f"Already {row[0]}")
+    return row
+
+
+@app.post("/api/camera-matches/{match_id}/confirm")
+def confirm_camera_match(request: Request, background: BackgroundTasks, match_id: int,
+                         actor: str = Depends(require_admin)):
+    """Operator confirms it is the wanted person: alert officers near the camera."""
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        _, suspect_id, camera_id, cam_name, lat, lng, sim, photo, mime = _pending_match(conn, match_id)
+        if photo is None:
+            raise HTTPException(409, "The camera has not uploaded the face photo yet - wait a few seconds")
+        person = _wanted_person(conn, suspect_id)
+        alert_id, radius, n, tokens = _make_alert(
+            conn, suspect_id=suspect_id, person=person, lat=lat, lng=lng, accuracy=None, similarity=sim,
+            photo=bytes(photo), mime=mime or "image/jpeg", officer_id=None, badge=f"camera:{cam_name}",
+            camera_id=camera_id, camera_name=cam_name)
+        conn.execute("UPDATE camera_matches SET status = 'confirmed', reviewed_by = %s, reviewed_at = now(), "
+                     "alert_id = %s WHERE id = %s", (actor, alert_id, match_id))
+    audit(pool, actor, "confirm_camera_match",
+          f"review #{match_id} -> alert #{alert_id}: {n} officers within {radius:g} km", suspect_id, sim)
+    _queue_alert_push(request, background, alert_id, tokens, person, f"seen by camera {cam_name}")
+    return {"id": match_id, "status": "confirmed", "alert_id": alert_id, "recipients": n,
+            "radius_km": radius, "push_enabled": push.enabled()}
+
+
+@app.post("/api/camera-matches/{match_id}/reject")
+def reject_camera_match(request: Request, match_id: int, actor: str = Depends(require_admin)):
+    """Operator says it is not the person. The camera photo is deleted."""
+    pool = request.app.state.pool
+    with pool.connection() as conn:
+        _, suspect_id, _, _, _, _, sim, _, _ = _pending_match(conn, match_id)
+        conn.execute("UPDATE camera_matches SET status = 'rejected', reviewed_by = %s, reviewed_at = now(), "
+                     "photo = NULL, photo_mime = NULL WHERE id = %s", (actor, match_id))
+    audit(pool, actor, "reject_camera_match", f"review #{match_id}", suspect_id, sim)
+    return {"id": match_id, "status": "rejected"}
 
 
 @app.get("/api/audit")

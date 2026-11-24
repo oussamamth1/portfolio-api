@@ -49,6 +49,16 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 | GET | `/api/alerts` | officer or admin | Officer: alerts received or sent (7 days). Admin: all |
 | GET | `/api/alerts/{id}`, `/api/alerts/{id}/photo` | officer (sender/recipient) or admin | Alert detail and field photo |
 | GET / PUT | `/api/settings/alerts` | admin | Alert radius (km) and push status |
+| GET / POST | `/api/cameras` | admin | List / register street cameras (POST returns the camera's API key once) |
+| PATCH / DELETE | `/api/cameras/{id}` | admin | Edit (name, area, lat, lng, active, threshold) / remove |
+| POST | `/api/cameras/{id}/key` | admin | New API key for a camera (old one stops working) |
+| GET | `/api/edge/config` | camera key (`X-Camera-Key`) | Face model and threshold for the edge box |
+| POST | `/api/edge/heartbeat` | camera key | Keeps the camera "online" |
+| POST | `/api/edge/detections` | camera key | JSON `embedding` (512 floats), `model`: best face of one passer-by; returns `match`, `match_id`, `need_photo` |
+| POST | `/api/edge/matches/{id}/photo` | camera key | Face crop for a pending match |
+| GET | `/api/camera-matches?status=` | admin | Review queue (`pending`, `confirmed`, `rejected`, `all`) |
+| POST | `/api/camera-matches/{id}/confirm` | admin | It is the person: alert officers near the camera |
+| POST | `/api/camera-matches/{id}/reject` | admin | Not the person: the camera photo is deleted |
 | GET | `/api/audit?suspect_id=` | admin | Who checked what, and when (optionally for one person) |
 
 `status` is one of `open`, `investigating`, `arrested`, `released`, `closed`.
@@ -70,6 +80,13 @@ first alert. Field photos are deleted after `ALERT_RETENTION_DAYS` (default 30).
 Push uses Firebase Cloud Messaging. Set `FIREBASE_SERVICE_ACCOUNT_JSON` to the full
 service-account key (Firebase console > Project settings > Service accounts > Generate new
 private key). Without it alerts still work, but officers only see them when they open the app.
+
+## Street cameras
+
+An edge box at each site runs `edge/` (see `edge/README.md` and `cameraplan.md`). It sends
+face embeddings only; the server compares them with **wanted** people only, using
+`CAMERA_MATCH_THRESHOLD` (default 0.55, per-camera override on `/admin`). Matches go to the
+review queue on `/admin` and alert officers only after an operator confirms.
 
 ## Before real use
 

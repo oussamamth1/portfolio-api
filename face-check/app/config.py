@@ -33,3 +33,8 @@ LOCATION_MAX_AGE_MIN = int(os.environ.get("LOCATION_MAX_AGE_MIN", "10"))
 ALERT_RETENTION_DAYS = int(os.environ.get("ALERT_RETENTION_DAYS", "30"))
 # Same officer + same person within this many minutes reuses the earlier alert.
 ALERT_DEDUPE_MIN = int(os.environ.get("ALERT_DEDUPE_MIN", "10"))
+
+# Street cameras: stricter than officer checks because nobody checks an ID on the spot.
+CAMERA_MATCH_THRESHOLD = float(os.environ.get("CAMERA_MATCH_THRESHOLD", "0.55"))
+# A camera is shown as offline when its edge box has not called in for this long.
+CAMERA_OFFLINE_AFTER_S = int(os.environ.get("CAMERA_OFFLINE_AFTER_S", "180"))

@@ -77,6 +77,41 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
+-- Street cameras: an edge box on site sends face embeddings; matches wait for review.
+CREATE TABLE IF NOT EXISTS cameras (
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    area         TEXT,
+    lat          DOUBLE PRECISION NOT NULL,
+    lng          DOUBLE PRECISION NOT NULL,
+    active       BOOLEAN NOT NULL DEFAULT true,
+    threshold    REAL,                    -- NULL = server default for cameras
+    key_hash     TEXT NOT NULL UNIQUE,    -- SHA-256 of the camera's API key
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ,
+    last_model   TEXT
+);
+
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS camera_id INT REFERENCES cameras(id) ON DELETE SET NULL;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS camera_name TEXT;
+
+CREATE TABLE IF NOT EXISTS camera_matches (
+    id            SERIAL PRIMARY KEY,
+    camera_id     INT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    suspect_id    INT NOT NULL REFERENCES suspects(id) ON DELETE CASCADE,
+    similarity    REAL NOT NULL,
+    hits          INT NOT NULL DEFAULT 1,
+    photo         BYTEA,                  -- face crop from the camera, uploaded after the match
+    photo_mime    TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',   -- pending | confirmed | rejected
+    reviewed_by   TEXT,
+    reviewed_at   TIMESTAMPTZ,
+    alert_id      INT REFERENCES alerts(id) ON DELETE SET NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS camera_matches_status_idx ON camera_matches (status, last_seen_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id             BIGSERIAL PRIMARY KEY,
     actor          TEXT NOT NULL,

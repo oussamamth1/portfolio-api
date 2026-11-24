@@ -59,6 +59,15 @@
   .history { font-size:13px; margin-top: 16px; }
   .history li { margin: 4px 0; }
   .hidden { display:none !important; }
+  .review { display:grid; grid-template-columns: 1fr 1fr 1.3fr; gap:14px; align-items:start; border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
+  @media (max-width: 700px) { .review { grid-template-columns: 1fr 1fr; } .review .info { grid-column: 1 / -1; } }
+  .review figure { margin:0; }
+  .review img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; background:var(--line); display:block; }
+  .review figcaption { font-size:12px; color:var(--muted); margin-top:4px; text-align:center; }
+  .sim { font-size: 22px; font-weight: 700; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--danger); } .dot.never { background: var(--muted); }
+  .keyshow { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background: var(--bg); border:1px dashed var(--line); padding:8px; border-radius:6px; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -76,7 +85,9 @@
 
   <nav class="tabs" id="tabs">
     <button data-tab="people" class="on">People</button>
+    <button data-tab="review">Camera review <span id="reviewCount" class="badge wanted hidden"></span></button>
     <button data-tab="alerts">Alerts</button>
+    <button data-tab="cameras">Cameras</button>
     <button data-tab="officers">Officers</button>
     <button data-tab="test">Test identification</button>
     <button data-tab="audit">Audit log</button>
@@ -123,6 +134,43 @@
         <button class="ghost small" id="prev">Previous</button>
         <button class="ghost small" id="next">Next</button>
       </div>
+    </section>
+  </div>
+
+  <!-- Camera review -->
+  <div data-panel="review" class="hidden">
+    <section>
+      <div class="row" style="align-items:center">
+        <h2 style="margin:0">Camera matches to review</h2>
+        <div style="flex:0 0 auto" class="chips" id="reviewChips"></div>
+      </div>
+      <p class="muted">A street camera saw someone who looks like a wanted person. Compare the camera photo with the
+        photo on file. <strong>Confirm</strong> sends an alert to officers near the camera; <strong>Not the person</strong>
+        deletes the camera photo. This page refreshes every 10 seconds.</p>
+      <div id="reviews"></div>
+    </section>
+  </div>
+
+  <!-- Cameras -->
+  <div data-panel="cameras" class="hidden">
+    <section>
+      <h2>Street cameras</h2>
+      <p class="muted">Register each camera, then put its key in the edge box config
+        (<code>edge/config.json</code>, see <code>edge/README.md</code>). The key is shown only once.</p>
+      <form id="cameraForm">
+        <div class="row">
+          <div><label>Name</label><input name="name" required minlength="2" placeholder="Av. Habib Bourguiba - north crossing"></div>
+          <div><label>Area</label><input name="area" placeholder="Sousse centre"></div>
+        </div>
+        <div class="row">
+          <div><label>Latitude</label><input name="lat" type="number" step="any" required placeholder="35.8256"></div>
+          <div><label>Longitude</label><input name="lng" type="number" step="any" required placeholder="10.6084"></div>
+          <div><label>Match threshold (empty = default)</label><input name="threshold" type="number" step="0.01" min="0.3" max="0.95"></div>
+        </div>
+        <div class="actions"><button type="submit">Register camera</button></div>
+        <div id="cmsg"></div>
+      </form>
+      <div class="tablewrap" style="margin-top:12px"><table id="cameras"></table></div>
     </section>
   </div>
 
@@ -282,6 +330,8 @@ $('tabs').addEventListener('click', (ev) => {
   if (t.dataset.tab === 'audit') loadAudit();
   if (t.dataset.tab === 'officers') loadOfficers();
   if (t.dataset.tab === 'alerts') loadAlerts();
+  if (t.dataset.tab === 'review') loadReviews();
+  if (t.dataset.tab === 'cameras') loadCameras();
 });
 
 // ---------- people list ----------
@@ -367,7 +417,7 @@ $('dWanted').addEventListener('change', () => { if (!$('dWanted').checked) $('dM
 $('addMost').addEventListener('change', () => { if ($('addMost').checked) $('addWanted').checked = true; });
 $('addWanted').addEventListener('change', () => { if (!$('addWanted').checked) $('addMost').checked = false; });
 
-const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed', alert: 'Alert sent' };
+const ACTIONS = { add_suspect: 'Added', update_suspect: 'Updated', identify: 'Photo check', delete_suspect: 'Removed', alert: 'Alert sent', camera_match: 'Seen by a street camera', confirm_camera_match: 'Camera match confirmed', reject_camera_match: 'Camera match rejected' };
 async function loadHistory(id) {
   $('dHistory').innerHTML = '<li class="muted">Loading...</li>';
   try {
@@ -443,6 +493,7 @@ async function loadOfficers() {
   if (!KEY) return;
   try {
     const rows = await (await api('/api/officers')).json();
+    officerList = rows;
     $('officers').innerHTML = '<tr><th>Badge</th><th>Name</th><th>Account</th><th>Last sign-in</th><th>Phones signed in</th><th></th></tr>' +
       (rows.map(o => `<tr>
         <td>${esc(o.badge)}</td><td>${esc(o.full_name)}</td>
@@ -451,7 +502,7 @@ async function loadOfficers() {
         <td>${o.sessions}</td>
         <td style="white-space:nowrap">
           <button class="danger small" onclick="setActive(${o.id}, ${!o.active})">${o.active ? 'Disable' : 'Enable'}</button>
-          <button class="ghost small" onclick="resetPw(${o.id}, '${esc(o.badge)}')">Reset password</button>
+          <button class="ghost small" onclick="resetPw(${o.id})">Reset password</button>
           <button class="ghost small" onclick="signOut(${o.id})">Sign out phones</button>
         </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No officer accounts yet.</td></tr>');
   } catch (e) { $('officers').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
@@ -464,7 +515,9 @@ async function officerAction(fn) {
 function setActive(id, active) {
   officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) }, KEY, jsonHeaders));
 }
-function resetPw(id, badgeNo) {
+let officerList = [];
+function resetPw(id) {
+  const badgeNo = (officerList.find(o => o.id === id) || {}).badge;
   const password = window.prompt(`New password for badge ${badgeNo} (min 8 characters):`);
   if (!password) return;
   officerAction(() => api(`/api/officers/${id}`, { method: 'PATCH', body: JSON.stringify({ password }) }, KEY, jsonHeaders));
@@ -495,6 +548,169 @@ async function testIdentify() {
     else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
       `<p><strong>${esc(m.full_name)}</strong> ${badge(m)} ${esc(STATUSES[m.status] || m.status)} - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
   } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+// ---------- camera review ----------
+let reviewFilter = 'pending';
+const REVIEW_FILTERS = [['pending', 'To review'], ['confirmed', 'Confirmed'], ['rejected', 'Rejected']];
+const matchPhotoCache = new Map();
+function matchPhotoUrl(id) {
+  id = String(id);
+  if (!matchPhotoCache.has(id)) {
+    matchPhotoCache.set(id, api(`/api/camera-matches/${id}/photo`).then(r => r.blob()).then(b => URL.createObjectURL(b))
+      .catch(e => { matchPhotoCache.delete(id); throw e; }));
+  }
+  return matchPhotoCache.get(id);
+}
+
+$('reviewChips').addEventListener('click', (ev) => {
+  const c = ev.target.closest('.chip');
+  if (!c) return;
+  reviewFilter = c.dataset.v;
+  loadReviews();
+});
+
+let lastPending = null;
+async function loadReviews() {
+  if (!KEY) return;
+  $('reviewChips').innerHTML = REVIEW_FILTERS.map(([v, l]) =>
+    `<button class="chip${reviewFilter === v ? ' on' : ''}" data-v="${v}">${l}</button>`).join('');
+  try {
+    const data = await (await api(`/api/camera-matches?status=${reviewFilter}&limit=50`)).json();
+    setPending(data.pending);
+    $('reviews').innerHTML = data.items.map(m => `
+      <div class="review" id="rv-${m.id}">
+        <figure><img data-match="${m.has_photo ? m.id : ''}" alt=""><figcaption>Camera · ${when(m.last_seen_at)}</figcaption></figure>
+        <figure><img data-ref="${m.suspect_id}" alt=""><figcaption>Photo on file</figcaption></figure>
+        <div class="info">
+          <div><strong>${esc(m.full_name)}</strong> ${badge({ wanted: m.wanted, most_wanted: m.most_wanted })}</div>
+          <div class="muted">Case ${esc(m.case_number)} · ${esc(STATUSES[m.case_status] || m.case_status)}</div>
+          <div style="margin-top:8px"><span class="sim">${Math.round(m.similarity * 100)}%</span> <span class="muted">similarity · seen ${m.hits}×</span></div>
+          <div class="muted" style="margin-top:4px">📍 ${esc(m.camera_name)}${m.camera_area ? ' · ' + esc(m.camera_area) : ''}
+            · <a href="https://www.google.com/maps/search/?api=1&query=${m.lat},${m.lng}" target="_blank" rel="noopener">map</a></div>
+          ${m.status === 'pending' ? `
+            <div class="actions">
+              <button onclick="reviewAction(${m.id}, 'confirm')"${m.has_photo ? '' : ' disabled title="Waiting for the camera photo"'}>Confirm - alert officers</button>
+              <button class="ghost" onclick="reviewAction(${m.id}, 'reject')">Not the person</button>
+            </div>${m.has_photo ? '' : '<div class="muted">Waiting for the camera photo...</div>'}`
+          : `<div class="muted" style="margin-top:8px">${m.status === 'confirmed' ? 'Confirmed' : 'Rejected'} by ${esc(m.reviewed_by)} · ${when(m.reviewed_at)}${m.alert_id ? ` · alert #${m.alert_id}` : ''}</div>`}
+          <div id="rvmsg-${m.id}"></div>
+        </div>
+      </div>`).join('') || `<p class="muted">${reviewFilter === 'pending' ? 'Nothing to review.' : 'None.'}</p>`;
+    for (const img of $('reviews').querySelectorAll('img[data-match]')) {
+      if (img.dataset.match) matchPhotoUrl(img.dataset.match).then(u => img.src = u).catch(() => {});
+    }
+    for (const img of $('reviews').querySelectorAll('img[data-ref]')) {
+      photoUrl(img.dataset.ref).then(u => img.src = u).catch(() => {});
+    }
+  } catch (e) { $('reviews').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+function setPending(n) {
+  $('reviewCount').textContent = n;
+  $('reviewCount').classList.toggle('hidden', !n);
+  document.title = n ? `(${n}) Face Check Admin` : 'Face Check Admin';
+  if (lastPending !== null && n > lastPending) {
+    try {  // short beep for a new camera match
+      const ctx = new AudioContext(), o = ctx.createOscillator();
+      o.connect(ctx.destination); o.frequency.value = 880; o.start(); o.stop(ctx.currentTime + 0.25);
+    } catch (e) {}
+  }
+  lastPending = n;
+}
+
+async function reviewAction(id, action) {
+  $(`rvmsg-${id}`).textContent = action === 'confirm' ? 'Sending alert...' : 'Saving...';
+  try {
+    const r = await (await api(`/api/camera-matches/${id}/${action}`, { method: 'POST' })).json();
+    if (action === 'confirm') {
+      $(`rvmsg-${id}`).innerHTML = `<span class="ok">Alert #${r.alert_id} sent to ${r.recipients} officer(s) within ${r.radius_km} km.</span>`;
+    }
+    setTimeout(loadReviews, action === 'confirm' ? 2500 : 0);
+  } catch (e) { $(`rvmsg-${id}`).innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+// Poll for new camera matches on every tab, so the counter and beep work everywhere.
+setInterval(async () => {
+  if (!KEY) return;
+  if (!document.querySelector('[data-panel="review"]').classList.contains('hidden')) { loadReviews(); return; }
+  try { setPending((await (await api('/api/camera-matches?status=pending&limit=1')).json()).pending); } catch (e) {}
+}, 10000);
+
+// ---------- cameras ----------
+let cameraList = [];
+const cameraById = (id) => cameraList.find(c => c.id === id);
+
+async function loadCameras() {
+  if (!KEY) return;
+  try {
+    const data = await (await api('/api/cameras')).json();
+    cameraList = data.items;
+    $('cameras').innerHTML = '<tr><th>Camera</th><th>Status</th><th>Location</th><th>Threshold</th><th>To review</th><th></th></tr>' +
+      (data.items.map(c => `<tr>
+        <td><strong>${esc(c.name)}</strong>${c.area ? `<br><span class="muted">${esc(c.area)}</span>` : ''}</td>
+        <td><span class="dot ${!c.last_seen_at ? 'never' : c.online ? 'on' : 'off'}"></span>${!c.active ? '<span class="err">Disabled</span>'
+          : !c.last_seen_at ? 'Never connected' : c.online ? 'Online' : 'Offline'}
+          ${c.last_seen_at ? `<br><span class="muted">last seen ${when(c.last_seen_at)}</span>` : ''}</td>
+        <td><a href="https://www.google.com/maps/search/?api=1&query=${c.lat},${c.lng}" target="_blank" rel="noopener">${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}</a></td>
+        <td>${c.effective_threshold}${c.threshold == null ? ' <span class="muted">(default)</span>' : ''}</td>
+        <td>${c.pending_matches || ''}</td>
+        <td style="white-space:nowrap">
+          <button class="ghost small" onclick="editCamera(${c.id})">Edit</button>
+          <button class="${c.active ? 'danger' : 'ghost'} small" onclick="cameraPatch(${c.id}, { active: ${!c.active} })">${c.active ? 'Disable' : 'Enable'}</button>
+          <button class="ghost small" onclick="rotateKey(${c.id})">New key</button>
+          <button class="danger small" onclick="deleteCamera(${c.id})">Delete</button>
+        </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No cameras yet.</td></tr>') +
+      `<tr><td colspan="6" class="muted">Default threshold for cameras: ${data.default_threshold}. Edge boxes must run face model <code>${esc(data.model)}</code>.</td></tr>`;
+  } catch (e) { $('cameras').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+}
+
+function showKey(name, key) {
+  $('cmsg').innerHTML = `<p class="ok">Key for <strong>${esc(name)}</strong> - copy it now, it will not be shown again:</p>
+    <div class="keyshow">${esc(key)}</div>`;
+}
+
+$('cameraForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = Object.fromEntries(new FormData(ev.target));
+  const body = { name: f.name.trim(), area: f.area.trim() || null, lat: parseFloat(f.lat), lng: parseFloat(f.lng),
+                 threshold: f.threshold ? parseFloat(f.threshold) : null };
+  try {
+    const c = await (await api('/api/cameras', { method: 'POST', body: JSON.stringify(body) }, KEY, jsonHeaders)).json();
+    ev.target.reset();
+    showKey(c.name, c.api_key);
+    loadCameras();
+  } catch (e) { $('cmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+});
+
+async function cameraPatch(id, body) {
+  try { await api(`/api/cameras/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, KEY, jsonHeaders); loadCameras(); }
+  catch (e) { $('cmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+function editCamera(id) {
+  const c = cameraById(id);
+  const name = prompt('Camera name:', c.name); if (name === null) return;
+  const area = prompt('Area:', c.area || ''); if (area === null) return;
+  const lat = prompt('Latitude:', c.lat); if (lat === null) return;
+  const lng = prompt('Longitude:', c.lng); if (lng === null) return;
+  const th = prompt('Match threshold (empty = default):', c.threshold ?? ''); if (th === null) return;
+  cameraPatch(id, { name: name.trim(), area: area.trim() || null, lat: parseFloat(lat), lng: parseFloat(lng),
+                    threshold: th.trim() ? parseFloat(th) : null });
+}
+
+async function rotateKey(id) {
+  const name = cameraById(id).name;
+  if (!confirm(`Make a new key for ${name}? The edge box stops working until you put the new key in its config.`)) return;
+  try { showKey(name, (await (await api(`/api/cameras/${id}/key`, { method: 'POST' })).json()).api_key); }
+  catch (e) { $('cmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+async function deleteCamera(id) {
+  const name = cameraById(id).name;
+  if (!confirm(`Delete camera ${name} and its review history?`)) return;
+  try { await api(`/api/cameras/${id}`, { method: 'DELETE' }); loadCameras(); }
+  catch (e) { $('cmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
 }
 
 // ---------- alerts ----------
@@ -539,7 +755,7 @@ async function loadAlerts() {
         <td><strong>${esc(a.full_name)}</strong><br>${badge({ wanted: true, most_wanted: a.most_wanted })}
           <span class="muted">case ${esc(a.case_number)}${a.similarity != null ? ` · ${Math.round(a.similarity * 100)}%` : ''}</span></td>
         <td>${when(a.created_at)}</td>
-        <td>officer:${esc(a.officer_badge)}</td>
+        <td>${a.camera_name ? '📷 ' + esc(a.camera_name) : 'officer ' + esc(a.officer_badge)}</td>
         <td>${a.recipients} <span class="muted">within ${a.radius_km} km</span></td>
         <td><a href="https://www.google.com/maps/search/?api=1&query=${a.lat},${a.lng}" target="_blank" rel="noopener">Map</a>
           ${a.accuracy_m != null ? `<span class="muted">±${Math.round(a.accuracy_m)} m</span>` : ''}</td>
@@ -561,7 +777,7 @@ async function loadAudit() {
   } catch (e) { $('audit').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
 }
 
-function refresh() { photoCache.clear(); loadList(); loadOfficers(); loadAudit(); }
+function refresh() { photoCache.clear(); loadList(); loadOfficers(); loadAudit(); loadReviews(); }
 refresh();
 </script>
 </body>

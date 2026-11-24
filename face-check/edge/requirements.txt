@@ -1,0 +1,6 @@
+# Edge box: same face model code as the server (app/faces.py), plus video and HTTP.
+numpy==1.26.4
+opencv-python==4.10.0.84      # use opencv-python-headless on a box without a screen (no --preview)
+onnxruntime==1.20.1           # on NVIDIA Jetson / GPU boxes use the matching onnxruntime-gpu build
+onnx==1.17.0
+requests==2.32.3
