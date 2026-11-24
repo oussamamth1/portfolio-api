@@ -91,6 +91,7 @@ async def add_suspect(
     case_number: str = Form(..., min_length=1, max_length=100),
     notes: str | None = Form(None, max_length=2000),
     wanted: bool = Form(True),
+    most_wanted: bool = Form(False),
     status: str = Form("open"),
     photo: UploadFile = File(...),
     actor: str = Depends(require_admin),
@@ -116,21 +117,22 @@ async def add_suspect(
     pool = request.app.state.pool
     with pool.connection() as conn:
         row = conn.execute(
-            "INSERT INTO suspects (full_name, case_number, notes, wanted, status, photo, photo_mime, embedding) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (full_name.strip(), case_number.strip(), notes, wanted, status, data,
+            "INSERT INTO suspects (full_name, case_number, notes, wanted, most_wanted, status, "
+            "photo, photo_mime, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (full_name.strip(), case_number.strip(), notes, wanted, wanted and most_wanted, status, data,
              photo.content_type or "image/jpeg", engine.embedding(face)),
         ).fetchone()
     audit(pool, actor, "add_suspect", "ok", row[0])
     return {"id": row[0], "full_name": full_name, "case_number": case_number,
-            "wanted": wanted, "status": status}
+            "wanted": wanted, "most_wanted": wanted and most_wanted, "status": status}
 
 
 @app.get("/api/suspects")
 def list_suspects(request: Request, q: str | None = None, limit: int = 100, offset: int = 0,
                   _: str = Depends(require_admin)):
     limit = max(1, min(limit, 500))
-    sql = ("SELECT id, full_name, case_number, notes, created_at, wanted, status, updated_at "
+    sql = ("SELECT id, full_name, case_number, notes, created_at, wanted, status, updated_at, "
+           "most_wanted "
            "FROM suspects")
     params: list = []
     if q:
@@ -146,7 +148,8 @@ def list_suspects(request: Request, q: str | None = None, limit: int = 100, offs
         "items": [
             {"id": r[0], "full_name": r[1], "case_number": r[2], "notes": r[3],
              "created_at": r[4].isoformat(), "wanted": r[5], "status": r[6],
-             "updated_at": r[7].isoformat()}
+         "most_wanted": r[7],
+             "updated_at": r[7].isoformat(), "most_wanted": r[8]}
             for r in rows
         ],
     }
@@ -168,6 +171,7 @@ class SuspectUpdate(BaseModel):
     case_number: str | None = Field(None, min_length=1, max_length=100)
     notes: str | None = Field(None, max_length=2000)
     wanted: bool | None = None
+    most_wanted: bool | None = None
     status: str | None = None
 
 
@@ -177,7 +181,7 @@ def update_suspect(request: Request, suspect_id: int, body: SuspectUpdate,
     changes = body.model_dump(exclude_unset=True)
     if "status" in changes and changes["status"] not in STATUSES:
         raise HTTPException(400, f"status must be one of {', '.join(STATUSES)}")
-    for k in ("full_name", "case_number", "wanted", "status"):
+    for k in ("full_name", "case_number", "wanted", "most_wanted", "status"):
         if k in changes and changes[k] is None:
             raise HTTPException(400, f"{k} cannot be empty")
     for k in ("full_name", "case_number"):
@@ -185,21 +189,27 @@ def update_suspect(request: Request, suspect_id: int, body: SuspectUpdate,
             changes[k] = changes[k].strip()
     if not changes:
         raise HTTPException(400, "Nothing to update")
+    if changes.get("wanted") is False:
+        changes["most_wanted"] = False  # not wanted means not on the most-wanted list either
+    elif changes.get("most_wanted") is True:
+        changes["wanted"] = True
 
     cols = ", ".join(f"{k} = %s" for k in changes)  # keys come from the model, not the client
     pool = request.app.state.pool
     with pool.connection() as conn:
         row = conn.execute(
             f"UPDATE suspects SET {cols}, updated_at = now() WHERE id = %s "
-            "RETURNING id, full_name, case_number, notes, wanted, status, updated_at",
+            "RETURNING id, full_name, case_number, notes, wanted, status, updated_at, most_wanted",
             (*changes.values(), suspect_id),
         ).fetchone()
     if not row:
         raise HTTPException(404, "Not found")
-    summary = ", ".join(f"{k}={v}" for k, v in changes.items() if k in ("wanted", "status"))
+    summary = ", ".join(f"{k}={v}" for k, v in changes.items()
+                        if k in ("wanted", "most_wanted", "status"))
     audit(pool, actor, "update_suspect", summary or "details", suspect_id)
     return {"id": row[0], "full_name": row[1], "case_number": row[2], "notes": row[3],
-            "wanted": row[4], "status": row[5], "updated_at": row[6].isoformat()}
+            "wanted": row[4], "status": row[5], "updated_at": row[6].isoformat(),
+            "most_wanted": row[7]}
 
 
 @app.delete("/api/suspects/{suspect_id}")
@@ -211,6 +221,26 @@ def delete_suspect(request: Request, suspect_id: int, actor: str = Depends(requi
         raise HTTPException(404, "Not found")
     audit(pool, actor, "delete_suspect", "ok", suspect_id)
     return {"deleted": suspect_id}
+
+
+@app.get("/api/wanted")
+def wanted_list(request: Request, q: str | None = None, actor: str = Depends(require_any)):
+    """People currently wanted, most wanted first. For the officer app's Wanted list."""
+    sql = ("SELECT id, full_name, case_number, notes, status, most_wanted, updated_at "
+           "FROM suspects WHERE wanted")
+    params: list = []
+    if q:
+        sql += " AND (full_name ILIKE %s OR case_number ILIKE %s)"
+        params += [f"%{q}%", f"%{q}%"]
+    sql += " ORDER BY most_wanted DESC, updated_at DESC LIMIT 500"
+    with request.app.state.pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {"id": r[0], "full_name": r[1], "case_number": r[2], "notes": r[3], "status": r[4],
+         "most_wanted": r[5], "updated_at": r[6].isoformat(),
+         "photo_url": f"/api/suspects/{r[0]}/photo"}
+        for r in rows
+    ]
 
 
 @app.post("/api/identify")
@@ -239,7 +269,7 @@ async def identify(request: Request, photo: UploadFile = File(...),
     with pool.connection() as conn:
         rows = conn.execute(
             "SELECT id, full_name, case_number, notes, 1 - (embedding <=> %s) AS sim, "
-            "wanted, status "
+            "wanted, status, most_wanted "
             "FROM suspects ORDER BY embedding <=> %s LIMIT %s",
             (emb, emb, config.TOP_K),
         ).fetchall()
@@ -247,6 +277,7 @@ async def identify(request: Request, photo: UploadFile = File(...),
     matches = [
         {"id": r[0], "full_name": r[1], "case_number": r[2], "notes": r[3],
          "similarity": round(float(r[4]), 3), "wanted": r[5], "status": r[6],
+         "most_wanted": r[7],
          "photo_url": f"/api/suspects/{r[0]}/photo"}
         for r in rows if float(r[4]) >= config.MATCH_THRESHOLD
     ]

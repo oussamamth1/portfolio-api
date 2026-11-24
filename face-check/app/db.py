@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS suspects (
 );
 ALTER TABLE suspects ADD COLUMN IF NOT EXISTS wanted BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE suspects ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE suspects ADD COLUMN IF NOT EXISTS most_wanted BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE suspects ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS suspects_embedding_idx
     ON suspects USING hnsw (embedding vector_cosine_ops);

@@ -32,6 +32,7 @@
   select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
   .badge { display:inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin: 4px 0; }
   .badge.wanted { background: var(--danger); color: #fff; }
+  .badge.most { background: #7a0d0d; color: #fff; }
   .badge.notwanted { background: var(--line); color: var(--text); }
   .check { display:flex; align-items:center; gap: 6px; margin: 8px 0 0; color: var(--text); font-size: 14px; }
   .check input { width: auto; }
@@ -61,7 +62,8 @@
       </div>
       <div class="row">
         <div><label>Status</label><select name="status" id="addStatus"></select></div>
-        <div><label>&nbsp;</label><label class="check"><input type="checkbox" id="addWanted" checked> Wanted by police</label></div>
+        <div><label>&nbsp;</label><label class="check"><input type="checkbox" id="addWanted" checked> Wanted by police</label>
+          <label class="check"><input type="checkbox" id="addMost"> Most wanted</label></div>
       </div>
       <label>Notes</label><textarea name="notes" rows="2"></textarea>
       <label>Photo (one clear, front-facing face)</label><input name="photo" type="file" accept="image/*" required>
@@ -115,6 +117,11 @@ const STATUSES = { open: 'Open case', investigating: 'Under investigation', arre
 const statusOptions = (cur) => Object.entries(STATUSES).map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('');
 $('addStatus').innerHTML = statusOptions('open');
 
+function badge(p) {
+  if (p.most_wanted) return '<span class="badge most">MOST WANTED</span>';
+  return p.wanted ? '<span class="badge wanted">WANTED</span>' : '<span class="badge notwanted">Not wanted</span>';
+}
+
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function api(path, opts = {}, key = KEY, extra = {}) {
@@ -149,10 +156,11 @@ async function loadList() {
         <img data-id="${s.id}" alt="">
         <div><strong>${esc(s.full_name)}</strong><br>
         <span class="muted">Case ${esc(s.case_number)}</span><br>
-        <span class="badge ${s.wanted ? 'wanted' : 'notwanted'}">${s.wanted ? 'WANTED' : 'Not wanted'}</span>
+        ${badge(s)}
         <span class="muted">${esc(STATUSES[s.status] || s.status)}</span>
         <select id="st-${s.id}">${statusOptions(s.status)}</select>
         <label class="check"><input type="checkbox" id="w-${s.id}"${s.wanted ? ' checked' : ''}> Wanted</label>
+        <label class="check"><input type="checkbox" id="mw-${s.id}"${s.most_wanted ? ' checked' : ''}> Most wanted</label>
         <div class="actions"><button onclick="saveStatus(${s.id})">Save</button>
         <button class="danger" onclick="del(${s.id})">Remove</button></div>
         <div id="m-${s.id}" class="muted"></div></div>
@@ -174,7 +182,8 @@ async function loadAudit() {
 }
 
 async function saveStatus(id) {
-  const body = JSON.stringify({ status: $(`st-${id}`).value, wanted: $(`w-${id}`).checked });
+  const most = $(`mw-${id}`).checked;
+  const body = JSON.stringify({ status: $(`st-${id}`).value, wanted: $(`w-${id}`).checked || most, most_wanted: most });
   $(`m-${id}`).textContent = 'Saving...';
   try {
     await api(`/api/suspects/${id}`, { method: 'PATCH', body }, KEY, { 'Content-Type': 'application/json' });
@@ -192,7 +201,9 @@ $('addForm').addEventListener('submit', async (ev) => {
   $('msg').textContent = 'Processing...';
   try {
     const fd = new FormData(ev.target);
-    fd.set('wanted', $('addWanted').checked ? 'true' : 'false');
+    const most = $('addMost').checked;
+    fd.set('wanted', $('addWanted').checked || most ? 'true' : 'false');
+    fd.set('most_wanted', most ? 'true' : 'false');
     const r = await (await api('/api/suspects', { method: 'POST', body: fd })).json();
     $('msg').innerHTML = `<span class="ok">Added #${r.id}</span>`;
     ev.target.reset();
@@ -210,7 +221,7 @@ async function testIdentify() {
     if (!r.face_detected) { $('testResult').innerHTML = '<p>No face detected.</p>'; return; }
     if (!r.matches.length) { $('testResult').innerHTML = `<p class="ok">No match (threshold ${r.threshold}).</p>`; }
     else $('testResult').innerHTML = '<p>Possible matches - verify identity:</p>' + r.matches.map(m =>
-      `<p><strong>${esc(m.full_name)}</strong> <span class="badge ${m.wanted ? 'wanted' : 'notwanted'}">${m.wanted ? 'WANTED' : 'Not wanted'}</span> ${esc(STATUSES[m.status] || m.status)} - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
+      `<p><strong>${esc(m.full_name)}</strong> ${badge(m)} ${esc(STATUSES[m.status] || m.status)} - case ${esc(m.case_number)} - similarity ${(m.similarity * 100).toFixed(0)}%</p>`).join('');
     loadAudit();
   } catch (e) { $('testResult').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }

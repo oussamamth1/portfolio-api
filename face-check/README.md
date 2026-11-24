@@ -30,11 +30,12 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/api/suspects` | admin | Add a person (form: `full_name`, `case_number`, `notes`, `wanted`, `status`, `photo`) |
+| POST | `/api/suspects` | admin | Add a person (form: `full_name`, `case_number`, `notes`, `wanted`, `most_wanted`, `status`, `photo`) |
 | GET | `/api/suspects?q=` | admin | List and search |
-| PATCH | `/api/suspects/{id}` | admin | JSON: any of `full_name`, `case_number`, `notes`, `wanted`, `status` |
+| PATCH | `/api/suspects/{id}` | admin | JSON: any of `full_name`, `case_number`, `notes`, `wanted`, `most_wanted`, `status` |
 | DELETE | `/api/suspects/{id}` | admin | Remove |
 | GET | `/api/suspects/{id}/photo` | admin or officer | Reference photo |
+| GET | `/api/wanted?q=` | officer (or admin) | Everyone with `wanted`, most wanted first |
 | POST | `/api/identify` | officer (or admin) | Form `photo` returns the top 3 possible matches |
 | POST | `/api/officer/login` | none | JSON `badge`, `password` returns a session `token` |
 | GET | `/api/officer/me` | officer | Who is signed in |
@@ -45,6 +46,7 @@ resetting their password ends all of their sessions). Five wrong passwords lock 
 | GET | `/api/audit` | admin | Who checked what, and when |
 
 `status` is one of `open`, `investigating`, `arrested`, `released`, `closed`.
+`most_wanted` implies `wanted`; setting `wanted` to false also clears `most_wanted`.
 
 Send the **full photo** to `/api/identify` (downscaled to about 1280 px), not a tight
 face crop. The server detects the face itself. Photos sent to `/identify` are processed in
